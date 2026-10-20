@@ -42,6 +42,8 @@ struct AssistantProposal: Codable, Identifiable {
     let before: [String]
     let diskRevision: String?
     var state: State = .pending
+    var locations: [String]?
+    var removesFormatting: [Bool]?
     enum State: String, Codable { case pending, applied, dismissed }
 }
 
@@ -119,6 +121,9 @@ enum NoteEdit {
     The title is block 0; replace it with kind title, but never delete it or insert another title.
     Never replace or delete a protected block. Never create attachments or access paths, commands, or tools.
     Changed text is plain text; unchanged blocks keep their formatting. Keep changes focused on the user's request.
+    Preserve the writer's voice. For proofreading, make the smallest correction and avoid unsolicited rewrites.
+    Omit replacements whose text is unchanged. Briefly explain the purpose of your suggestions in the reply;
+    do not repeat the full rewritten text there, because Notas shows an exact change preview separately.
     For delete, use the existing block kind and an empty text field. If clarification is needed, reply with no operations.
     """
 }

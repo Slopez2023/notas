@@ -1,25 +1,47 @@
 import Foundation
 
+enum ChatModel: String, CaseIterable, Identifiable, Sendable {
+    case luna = "gpt-6-luna"
+    case luna56 = "gpt-5.6-luna"
+    case grok = "grok-4.7"
+    case muse = "muse-spark-1.3-contributor"
+    case deepseekFlash = "deepseek-v4.1-flash"
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .luna: "GPT 6 Luna"
+        case .luna56: "GPT 5.6 Luna"
+        case .grok: "Grok 4.7"
+        case .muse: "Muse Spark 1.3 Contributor"
+        case .deepseekFlash: "DeepSeek V4.1 Flash"
+        }
+    }
+
+    var usesChatCompletions: Bool { self == .deepseekFlash }
+    var reasoningLabel: String { usesChatCompletions ? "High reasoning" : "Medium reasoning" }
+}
+
 struct ChatTurn: Sendable {
     let role: String
     let text: String
 }
 
-/// One stateless request to an OpenAI-compatible Responses endpoint. The model gets the note snapshot and the
+/// One stateless request to an OpenAI-compatible endpoint. The model gets the note snapshot and the
 /// conversation text only: no tools, files, or other notes exist for it to reach.
 struct ChatClient: Sendable {
     static let defaultBaseURL = URL(string: "https://opencode.ai/inference/go/openai/v1")!
-    static let model = "gpt-6-luna"
-    static let modelName = "Luna"
 
     var baseURL = ChatClient.defaultBaseURL
     let apiKey: String
+    let model: ChatModel
     /// OpenCode routes requests by session; one id per client keeps a conversation's cache warm.
     private let session = UUID().uuidString.lowercased()
 
-    init(apiKey: String, baseURL: URL = ChatClient.defaultBaseURL) {
+    init(apiKey: String, baseURL: URL = ChatClient.defaultBaseURL, model: ChatModel = .luna) {
         self.apiKey = apiKey
         self.baseURL = baseURL
+        self.model = model
     }
 
     private static let urlSession: URLSession = {
@@ -31,19 +53,33 @@ struct ChatClient: Sendable {
     }()
 
     func complete(instructions: String, turns: [ChatTurn], schema: [String: Any]) async throws -> String {
-        var request = URLRequest(url: baseURL.appendingPathComponent("responses"))
+        var request = URLRequest(url: baseURL.appendingPathComponent(model.usesChatCompletions ? "chat/completions" : "responses"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue(session, forHTTPHeaderField: "x-opencode-session")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
-            "model": Self.model,
-            "reasoning": ["effort": "medium"],
-            "instructions": instructions,
-            "input": turns.map { ["role": $0.role, "content": $0.text] },
-            "max_output_tokens": 32_000,
-            "text": ["format": ["type": "json_schema", "name": "note_reply", "strict": true, "schema": schema]]
-        ]
+        request.setValue("Notas/1.0", forHTTPHeaderField: "User-Agent")
+        let body: [String: Any]
+        if model.usesChatCompletions {
+            let schemaText = String(decoding: try JSONSerialization.data(withJSONObject: schema), as: UTF8.self)
+            body = [
+                "model": model.rawValue,
+                "reasoning_effort": "high",
+                "messages": [["role": "system", "content": instructions + "\nReturn only a JSON object matching this schema:\n" + schemaText]]
+                    + turns.map { ["role": $0.role, "content": $0.text] },
+                "max_tokens": 32_000,
+                "response_format": ["type": "json_object"]
+            ]
+        } else {
+            body = [
+                "model": model.rawValue,
+                "reasoning": ["effort": "medium"],
+                "instructions": instructions,
+                "input": turns.map { ["role": $0.role, "content": $0.text] },
+                "max_output_tokens": 32_000,
+                "text": ["format": ["type": "json_schema", "name": "note_reply", "strict": true, "schema": schema]]
+            ]
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let data: Data, response: URLResponse
         do { (data, response) = try await Self.urlSession.data(for: request) }
@@ -64,6 +100,23 @@ struct ChatClient: Sendable {
         guard let json else { throw AssistantError.message("The assistant sent an unreadable response.") }
         if let error = json["error"] as? [String: Any], let message = error["message"] as? String {
             throw AssistantError.message(message)
+        }
+        if model.usesChatCompletions {
+            guard let choice = (json["choices"] as? [[String: Any]])?.first,
+                  let message = choice["message"] as? [String: Any] else {
+                throw AssistantError.message("The assistant didn't return a reply.")
+            }
+            if choice["finish_reason"] as? String == "length" {
+                throw AssistantError.message("The reply was cut off. Try a shorter request or a smaller note.")
+            }
+            if choice["finish_reason"] as? String == "content_filter" || message["refusal"] as? String != nil {
+                throw AssistantError.message("The assistant declined this request.")
+            }
+            guard choice["finish_reason"] as? String == "stop",
+                  let text = message["content"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw AssistantError.message("The assistant didn't return a reply.")
+            }
+            return text
         }
         if json["status"] as? String == "incomplete" {
             throw AssistantError.message("The reply was cut off. Try a shorter request or a smaller note.")

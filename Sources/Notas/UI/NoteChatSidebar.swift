@@ -73,8 +73,23 @@ struct NoteChatSidebar: View {
                 .font(.system(size: 12, weight: .medium)).foregroundStyle(style.secondary).lineLimit(1)
             HStack(spacing: 5) {
                 Circle().fill(assistant.hasKey ? Color.green : style.tertiary).frame(width: 5, height: 5)
-                Text(isHistory ? "Earlier conversation · read only" : "\(assistant.modelLabel) · medium · this note only")
+                Text(isHistory ? "Earlier conversation · read only" : "\(current.selectedModel.reasoningLabel) · this note only")
                     .font(.system(size: 10.5)).foregroundStyle(style.tertiary)
+            }
+            if !isHistory {
+                Picker("Model", selection: Binding(get: { current.selectedModel }, set: { assistant.setModel($0, for: noteID) })) {
+                    ForEach(ChatModel.allCases) { model in
+                        Text(model.label).tag(model)
+                    }
+                }
+                .pickerStyle(.menu).controlSize(.small)
+                .disabled(busy)
+                .help("Model for this note")
+                if current.selectedModel == .muse {
+                    Text("Muse Contributor may use your messages to train Meta models.")
+                        .font(.system(size: 10.5)).foregroundStyle(style.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .padding(16)
@@ -96,7 +111,7 @@ struct NoteChatSidebar: View {
                         .buttonStyle(.borderedProminent).disabled(keyDraft.isEmpty)
                     if replacingKey { Button("Cancel") { replacingKey = false; keyDraft = "" } }
                 }.controlSize(.small)
-                Text("Stored in your Keychain. Uses \(assistant.modelLabel) at medium reasoning through OpenCode Go.")
+                Text("Stored in your Keychain. Uses the selected model through OpenCode Go.")
                     .font(.system(size: 10.5)).foregroundStyle(style.tertiary)
             }
         }
@@ -130,7 +145,7 @@ struct NoteChatSidebar: View {
                     }
                     ForEach(displayed.messages) { message in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(message.role == .user ? "You" : message.role == .assistant ? assistant.modelLabel : "Conversation")
+                            Text(message.role == .user ? "You" : message.role == .assistant ? message.modelLabel : "Conversation")
                                 .font(.system(size: 10, weight: .semibold)).foregroundStyle(style.tertiary)
                             Text(message.text)
                                 .font(.system(size: 13)).lineSpacing(4).textSelection(.enabled)
@@ -158,30 +173,9 @@ struct NoteChatSidebar: View {
     }
 
     private func proposalCard(_ proposal: AssistantProposal) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(proposal.state == .applied ? "Applied · ⌘Z to undo" : proposal.state == .dismissed ? "Dismissed" : "Suggested changes")
-                .font(.system(size: 11, weight: .semibold))
-            ForEach(Array(proposal.operations.enumerated()), id: \.offset) { index, op in
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("\(op.action == .insertAfter ? "Insert after" : op.action == .delete ? "Delete" : "Replace") block \(op.block + 1)")
-                        .font(.system(size: 10)).foregroundStyle(style.tertiary)
-                    if op.action != .insertAfter, proposal.before.indices.contains(index), !proposal.before[index].isEmpty {
-                        Text(proposal.before[index]).strikethrough().foregroundStyle(style.secondary)
-                    }
-                    if op.action != .delete { Text(op.text).foregroundStyle(style.text) }
-                }.font(.system(size: 12)).textSelection(.enabled)
-            }
-            if proposal.state == .pending && !isHistory {
-                HStack {
-                    Button("Apply") { assistant.apply(proposal.id, noteID: noteID) }
-                        .buttonStyle(.borderedProminent).disabled(busy)
-                    Button("Dismiss") { assistant.dismiss(proposal.id, noteID: noteID) }.buttonStyle(.borderless)
-                }.controlSize(.small)
-            }
-        }
-        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(style.accentColor.opacity(0.2), lineWidth: 0.5))
+        NoteProposalCard(proposal: proposal, style: style, readOnly: isHistory, busy: busy,
+                         accept: { assistant.apply(proposal.id, noteID: noteID) },
+                         keepOriginal: { assistant.dismiss(proposal.id, noteID: noteID) })
     }
 
     private var composer: some View {

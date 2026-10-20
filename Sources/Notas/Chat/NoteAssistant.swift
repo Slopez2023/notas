@@ -6,6 +6,8 @@ struct NoteChatMessage: Codable, Identifiable {
     let role: Role
     var text: String
     var proposal: AssistantProposal?
+    var modelID: String?
+    var modelLabel: String { modelID.map { ChatModel(rawValue: $0)?.label ?? $0 } ?? ChatModel.luna.label }
     enum Role: String, Codable { case user, assistant, notice }
 }
 
@@ -17,6 +19,8 @@ struct NoteChatSession: Codable, Identifiable {
     var awaitingReply = false
     var baseRevision: String?
     var diskRevision: String?
+    var modelID: String?
+    var selectedModel: ChatModel { modelID.flatMap(ChatModel.init(rawValue:)) ?? .luna }
 }
 
 @MainActor
@@ -27,8 +31,6 @@ final class NoteAssistant {
     private(set) var busyNotes: Set<UUID> = []
     private(set) var hasKey = false
     var error: String?
-    var modelLabel: String { ChatClient.modelName }
-    var status: String { hasKey ? "\(ChatClient.modelName) · medium reasoning" : "Add an OpenCode API key to chat about this note." }
     @ObservationIgnored private weak var app: AppState?
     @ObservationIgnored private let stateURL: URL
     @ObservationIgnored private let io = DispatchQueue(label: "notas.assistant.persistence")
@@ -85,6 +87,13 @@ final class NoteAssistant {
         persist()
     }
 
+    func setModel(_ model: ChatModel, for noteID: UUID) {
+        guard !busyNotes.contains(noteID) else { return }
+        ensureSession(noteID)
+        sessions[noteID]?.modelID = model.rawValue
+        persist()
+    }
+
     func saveKey(_ raw: String) {
         let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty, key.unicodeScalars.allSatisfy({ $0.isASCII && $0.value > 32 }) else {
@@ -130,12 +139,13 @@ final class NoteAssistant {
             try saveNow()
             busyNotes.insert(noteID)
             let conversation = sessions[noteID]!.id
-            let client = ChatClient(apiKey: apiKey, baseURL: baseURL)
+            let model = sessions[noteID]!.selectedModel
+            let client = ChatClient(apiKey: apiKey, baseURL: baseURL, model: model)
             tasks[noteID] = Task { [weak self] in
                 do {
                     let text = try await client.complete(instructions: NoteEdit.instructions, turns: turns, schema: AssistantReply.schema)
                     guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation else { return }
-                    self.finish(noteID, text: text)
+                    self.finish(noteID, text: text, model: model)
                 } catch is CancellationError {
                     return
                 } catch {
@@ -157,8 +167,10 @@ final class NoteAssistant {
 
     func newConversation(_ noteID: UUID) {
         guard !busyNotes.contains(noteID) else { return }
+        let modelID = sessions[noteID]?.modelID
         if let old = sessions[noteID], !old.messages.isEmpty { archives.append(old) }
         sessions[noteID] = NoteChatSession(noteID: noteID)
+        sessions[noteID]?.modelID = modelID
         persist()
     }
 
@@ -208,7 +220,7 @@ final class NoteAssistant {
         addNotice(message, to: noteID)
     }
 
-    private func finish(_ noteID: UUID, text: String) {
+    private func finish(_ noteID: UUID, text: String, model: ChatModel) {
         busyNotes.remove(noteID); tasks[noteID] = nil
         defer { snapshots[noteID] = nil; persist() }
         guard sessions[noteID]?.awaitingReply == true else { return }
@@ -223,11 +235,16 @@ final class NoteAssistant {
                     throw AssistantError.message("The note changed. Ask for a fresh suggestion.")
                 }
                 _ = try NoteEdit.applying(reply.operations, to: snapshot)
-                proposal = AssistantProposal(id: UUID(), noteID: noteID, revision: revision, operations: reply.operations,
-                                             before: reply.operations.map { snapshot.blocks[$0.block].plainText },
-                                             diskRevision: sessions[noteID]?.diskRevision)
+                let operations = reply.operations.filter { $0.action != .replace || snapshot.blocks[$0.block].plainText != $0.text }
+                if !operations.isEmpty {
+                    proposal = AssistantProposal(id: UUID(), noteID: noteID, revision: revision, operations: operations,
+                                                 before: operations.map { snapshot.blocks[$0.block].plainText },
+                                                 diskRevision: sessions[noteID]?.diskRevision,
+                                                 locations: operations.map { NoteEditPreview.location(of: $0, in: snapshot) },
+                                                 removesFormatting: operations.map { NoteEditPreview.removesFormatting($0, in: snapshot) })
+                }
             }
-            sessions[noteID]?.messages.append(NoteChatMessage(role: .assistant, text: reply.reply, proposal: proposal))
+            sessions[noteID]?.messages.append(NoteChatMessage(role: .assistant, text: reply.reply, proposal: proposal, modelID: model.rawValue))
         } catch { addNotice("The reply couldn't be read safely. No changes were applied. \(error.localizedDescription)", to: noteID) }
     }
 

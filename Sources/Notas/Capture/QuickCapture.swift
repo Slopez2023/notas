@@ -134,6 +134,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
             if open {
                 model.app.open(note.id, newTab: true)
                 model.app.showMainWindow?()
+                NSApp.activate()
             } else if let previousApp, previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier {
                 previousApp.activate()
             }

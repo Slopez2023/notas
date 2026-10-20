@@ -7,6 +7,8 @@ import Foundation
 /// which builds release so the numbers mean something).
 @MainActor
 enum Benchmark {
+    private static var sink = 0
+
     static func run() {
         _ = NSApplication.shared
         print("Notas benchmark (\(optimization))")
@@ -33,6 +35,11 @@ enum Benchmark {
         samples.sort()
         let median = samples[samples.count / 2]
         print(String(format: "  %-44@ %9.2f ms", label as NSString, median))
+    }
+
+    @inline(never)
+    private static func consume(_ notes: [Note]) {
+        sink ^= notes.first?.id.hashValue ?? 0
     }
 
     private static let words = "the quick brown fox jumps over a lazy dog while thinking about dinner plans for lisbon in spring and other small things".split(separator: " ").map(String.init)
@@ -89,6 +96,23 @@ enum Benchmark {
         store.load()
         time("search \"fox\" (1000 notes)") { _ = store.search("fox") }
         time("search \"quick brown\" (1000 notes)") { _ = store.search("quick brown") }
+        time("recent 5, full-sort baseline", runs: 50) {
+            consume(Array(store.notes.values.sorted { $0.modified > $1.modified }.prefix(5)))
+        }
+        time("recent 5 (menu query)", runs: 50) { consume(store.search("", limit: 5).map(\.note)) }
+        time("menu recents, previous repeated queries", runs: 50) {
+            let recent = store.search("", limit: 5).map(\.note)
+            consume(recent)
+            for note in recent {
+                let matches = store.search("", limit: 5).map(\.note).filter { $0.displayTitle == note.displayTitle }
+                sink ^= matches.count
+            }
+        }
+        time("menu recents, one snapshot", runs: 50) {
+            let recent = store.search("", limit: 5).map(\.note)
+            consume(recent)
+            for note in recent { sink ^= recent.filter { $0.displayTitle == note.displayTitle }.count }
+        }
         time("list all notes sorted") { _ = store.notes(in: nil) }
         time("pinned + counts (sidebar rail)") {
             _ = store.pinnedNotes

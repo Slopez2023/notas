@@ -46,16 +46,7 @@ struct NotasApp: App {
             TextEditingCommands()
         }
         MenuBarExtra("Notas", systemImage: "square.and.pencil") {
-            Button("Quick note") { delegate.quickCapture?.show() }
-            Button("Open Notas") { delegate.showMainWindow() }
-            Divider()
-            if let capture = delegate.quickCapture {
-                Picker("Quick note shortcut", selection: Binding(get: { capture.model.shortcut }, set: { capture.setShortcut($0) })) {
-                    ForEach(CaptureShortcut.allCases) { Text($0.label).tag($0) }
-                }
-            }
-            Divider()
-            Button("Quit Notas") { NSApp.terminate(nil) }
+            NotasMenu(delegate: delegate)
         }
     }
 }
@@ -146,10 +137,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func showMainWindow() {
-        app.showMainWindow?()
+    func showMainWindow(open: (() -> Void)? = nil) {
+        if let open { open() } else { app.showMainWindow?() }
         NSApp.activate()
-        NSApp.windows.first { $0.identifier?.rawValue == "main" }?.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async {
+            NSApp.windows.first { $0.identifier?.rawValue.contains("main") == true }?.makeKeyAndOrderFront(nil)
+        }
     }
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {

@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unsigned release app
+        run: NOTAS_SIGNING_IDENTITY=- scripts/build-app.sh release
+      - name: Zip app
+        run: ditto -c -k --keepParent build/Notas.app Notas.app.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Notas.app
+          path: Notas.app.zip
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" Notas.app.zip \
+            --title "Notas ${GITHUB_REF_NAME#v}" \
+            --notes "Unsigned build for Apple Silicon Macs on macOS 26. Install with the one-line command in the README."

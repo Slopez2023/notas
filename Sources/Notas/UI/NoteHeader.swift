@@ -66,13 +66,17 @@ struct NoteHeader: View {
             HStack(spacing: 6) {
                 Circle().fill(Color(hex: notebook?.color.hex ?? 0x999999)).frame(width: 7, height: 7)
                 Text((notebook?.name ?? "Notebook").uppercased())
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Move to another notebook")
+        .frame(maxWidth: 180, alignment: .leading)
+        .layoutPriority(-1)
+        .accessibilityIdentifier("note-header-notebook")
+        .help("\(notebook?.name ?? "Notebook") · Move to another notebook")
     }
 
     private func commitTag() {

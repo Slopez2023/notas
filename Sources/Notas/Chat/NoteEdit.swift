@@ -44,6 +44,7 @@ struct AssistantProposal: Codable, Identifiable {
     var revision: String
     var operations: [AssistantOperation]
     var before: [String]
+    /// Opaque `LibraryStore.documentVersion` token from when the proposal was made.
     var diskRevision: String?
     var state: State = .pending
     var locations: [String]?
@@ -77,8 +78,7 @@ enum NoteEdit {
             total += op.text.utf8.count
             guard total <= 120_000, document.blocks.indices.contains(op.block),
                   let kind = BlockKind(rawValue: op.kind), !kind.isObject,
-                  !op.text.contains("\u{FFFC}"), !op.text.contains("\r"), !op.text.contains("\n"),
-                  !op.text.contains("\u{2029}"), !op.text.contains("\u{0000}") else {
+                  !containsRejectedScalar(op.text) else {
                 throw AssistantError.message("The assistant returned an invalid text edit. Ask it to try again.")
             }
             if op.action == .insertAfter {
@@ -110,6 +110,16 @@ enum NoteEdit {
         }
         guard blocks.first?.kind == .title else { throw AssistantError.message("The note's title must be preserved.") }
         return NoteDocument(blocks: blocks)
+    }
+
+    /// CR, LF, paragraph separator, attachment, and NUL are rejected by scalar so a CRLF grapheme cannot pass.
+    private static func containsRejectedScalar(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x0000, 0x000A, 0x000D, 0x2029, 0xFFFC: true
+            default: false
+            }
+        }
     }
 
     /// Talk and small edits stay on the fast setting. Reworking the note earns a deeper pass.

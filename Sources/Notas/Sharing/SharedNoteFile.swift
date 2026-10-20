@@ -13,7 +13,7 @@ struct SharedNoteFile: Codable {
     let pinned: Bool
     let notebookName: String?
     let notebookColor: NotebookColor?
-    let content: BlockClipboard
+    var content: BlockClipboard
 
     init(note: Note, resolved: ResolvedStyle, assets: NoteAssets, notebook: Notebook?) throws {
         format = Self.typeIdentifier
@@ -35,7 +35,8 @@ struct SharedNoteFile: Codable {
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size <= 200_000_000 else { throw ShareError.tooLarge }
-        let file = try LibraryStore.decoder.decode(Self.self, from: Data(contentsOf: url))
+        var file = try LibraryStore.decoder.decode(Self.self, from: Data(contentsOf: url))
+        file.content.document = file.content.document.normalizingExternalIndentation()
         guard file.format == typeIdentifier, file.version == 1 else { throw ShareError.unsupported }
         guard Theme.presets.contains(where: { $0.id == file.style.themeID && $0.id != "auto" }),
               file.style.accent != nil, file.style.titleFont != nil, file.style.bodyFont != nil,

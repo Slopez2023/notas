@@ -27,7 +27,6 @@ struct CommandPalette: View {
     @Environment(AppState.self) private var app
     @State private var query = ""
     @State private var selection = 0
-    @State private var monitor: Any?
     @State private var listHeight: CGFloat = 0
     @State private var built = PaletteSections()
     @FocusState private var focused: Bool
@@ -52,6 +51,7 @@ struct CommandPalette: View {
                         .font(.system(size: 16))
                         .foregroundStyle(style.text)
                         .focused($focused)
+                        .accessibilityIdentifier("note-command-search")
                         .onChange(of: query) { selection = 0 }
                     Text("esc")
                         .font(.system(size: 10.5, weight: .medium, design: .monospaced))
@@ -106,43 +106,22 @@ struct CommandPalette: View {
             .shadow(color: .black.opacity(style.theme.isDark ? 0.55 : 0.2), radius: 40, y: 18)
             .padding(.top, 86)
         }
-        .onAppear {
-            focused = true
-            installKeyMonitor()
-        }
-        .onDisappear(perform: removeKeyMonitor)
-    }
-
-    // MARK: Keyboard
-
-    private func installKeyMonitor() {
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let items = currentSections().flatMap(\.1)
-            switch event.keyCode {
-            case 125: // down
-                selection = min(selection + 1, max(items.count - 1, 0)); return nil
-            case 126: // up
-                selection = max(selection - 1, 0); return nil
-            case 36, 76: // return
-                if items.indices.contains(selection) { run(items[selection]) }
-                return nil
-            case 53: // escape
-                close(); return nil
-            default:
-                if event.modifierFlags.contains(.control), event.charactersIgnoringModifiers == "n" {
-                    selection = min(selection + 1, max(items.count - 1, 0)); return nil
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("note-command-palette")
+        .background {
+            PaletteKeyboardMonitor(isActive: { app.isPaletteOpen }) { action in
+                let items = currentSections().flatMap(\.1)
+                switch action {
+                case .next: selection = min(selection + 1, max(items.count - 1, 0))
+                case .previous: selection = max(selection - 1, 0)
+                case .run:
+                    if items.indices.contains(selection) { run(items[selection]) }
+                case .close: close()
                 }
-                if event.modifierFlags.contains(.control), event.charactersIgnoringModifiers == "p" {
-                    selection = max(selection - 1, 0); return nil
-                }
-                return event
             }
+            .allowsHitTesting(false)
         }
-    }
-
-    private func removeKeyMonitor() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
+        .onAppear { focused = true }
     }
 
     private func close() {
@@ -153,7 +132,7 @@ struct CommandPalette: View {
     private func run(_ item: PaletteItem) {
         app.isPaletteOpen = false
         item.action()
-        if !app.isStylePanelOpen { app.focusEditorSoon() }
+        if !app.isStylePanelOpen && app.notebookEditTarget == nil { app.focusEditorSoon() }
     }
 
     // MARK: Items
@@ -231,7 +210,7 @@ struct CommandPalette: View {
                 app.isChatOpen = true
             },
             PaletteItem(id: "all", icon: .symbol("square.grid.2x2"), title: "Browse all notes", shortcut: "⇧⌘A") { app.toggleDrawer(.all) },
-            PaletteItem(id: "notebook-new", icon: .symbol("plus.circle"), title: "New notebook", shortcut: nil) { newNotebookPrompt() },
+            PaletteItem(id: "notebook-new", icon: .symbol("plus.circle"), title: "New notebook", shortcut: nil) { app.notebookEditTarget = .new },
         ]
 
         if let note = app.activeNote {
@@ -292,21 +271,71 @@ struct CommandPalette: View {
         }
         return items
     }
+}
 
-    private func newNotebookPrompt() {
-        let alert = NSAlert()
-        alert.messageText = "New notebook"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.placeholderString = "Name"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        if alert.runModal() == .alertFirstButtonReturn {
-            let name = field.stringValue.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { return }
-            let nb = app.store.createNotebook(name: name)
-            app.toggleDrawer(.notebook(nb.id))
+private enum PaletteKeyAction {
+    case next, previous, run, close
+
+    init?(event: NSEvent, window: NSWindow?) {
+        guard let window, event.window === window else { return nil }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if modifiers == .control {
+            switch event.charactersIgnoringModifiers {
+            case "n": self = .next
+            case "p": self = .previous
+            default: return nil
+            }
+        } else if modifiers.isEmpty {
+            switch event.keyCode {
+            case 125: self = .next
+            case 126: self = .previous
+            case 36, 76: self = .run
+            case 53: self = .close
+            default: return nil
+            }
+        } else {
+            return nil
+        }
+    }
+}
+
+private struct PaletteKeyboardMonitor: NSViewRepresentable {
+    let isActive: () -> Bool
+    let onKey: (PaletteKeyAction) -> Void
+
+    func makeNSView(context: Context) -> MonitorView { MonitorView(isActive: isActive, onKey: onKey) }
+    func updateNSView(_ view: MonitorView, context: Context) {
+        view.isActive = isActive
+        view.onKey = onKey
+    }
+    static func dismantleNSView(_ view: MonitorView, coordinator: ()) { view.removeMonitor() }
+
+    final class MonitorView: NSView {
+        var isActive: () -> Bool
+        var onKey: (PaletteKeyAction) -> Void
+        private var monitor: Any?
+
+        init(isActive: @escaping () -> Bool, onKey: @escaping (PaletteKeyAction) -> Void) {
+            self.isActive = isActive
+            self.onKey = onKey
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            removeMonitor()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, self.isActive(), let action = PaletteKeyAction(event: event, window: self.window) else { return event }
+                self.onKey(action)
+                return nil
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
         }
     }
 }

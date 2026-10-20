@@ -30,6 +30,7 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
 
     private var contentStorageRef: NSTextContentStorage?
     private var isRestyling = false
+    private var isStructuredEdit = false
 
     // Overlays
     let overlays = EditorOverlayModel()
@@ -121,6 +122,7 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
 
     override func deleteForward(_ sender: Any?) {
         let selection = selectedRange()
+        if rejectsSeparatorDeletion(selection) { return }
         if selection.length == 0 {
             let ns = string as NSString
             let para = ns.paragraphRange(for: selection)
@@ -307,7 +309,9 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         guard para.length == 0, para.location == nsString.length, para.location > 0, block.kind != .body,
               let storage = textStorage else { return false }
         let at = para.location
-        let newline = NSAttributedString(string: "\n", attributes: styler.typingAttributes(for: block))
+        var newlineAttrs = styler.typingAttributes(for: block)
+        newlineAttrs[.notasTerminal] = true
+        let newline = NSAttributedString(string: "\n", attributes: newlineAttrs)
         if shouldChangeText(in: NSRange(location: at, length: 0), replacementString: "\n") {
             storage.replaceCharacters(in: NSRange(location: at, length: 0), with: newline)
             didChangeText()
@@ -397,7 +401,7 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         editAttributes(in: NSUnionRange(first, last)) { storage in
             for p in paragraphs {
                 var a = BlockAttributes(storage.attributes(at: p.location, effectiveRange: nil))
-                a.indent = max(0, min(4, a.indent + delta))
+                a.indent = NoteDocument.indent(applying: delta, to: a.indent)
                 storage.removeAttribute(.notasIndent, range: p)
                 storage.addAttributes(a.dictionary, range: p)
             }
@@ -732,12 +736,13 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
 
     private func changeIndentOfEmpty(block: BlockAttributes, para: NSRange, delta: Int) {
         var b = block
-        b.indent = max(0, b.indent + delta)
+        b.indent = NoteDocument.indent(applying: delta, to: block.indent)
         convertCurrent(to: b, para: para)
     }
 
     override func deleteBackward(_ sender: Any?) {
         let sel = selectedRange()
+        if rejectsSeparatorDeletion(sel) { return }
         if sel.length == 0, sel.location > 0 {
             let para = paragraphRange(at: sel.location)
             let block = blockAttributes(at: sel.location)
@@ -758,13 +763,36 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
     }
 
     override func insertTab(_ sender: Any?) {
-        if blockAttributes(at: currentLocation).kind.isList { changeIndent(by: 1); return }
+        if adjustListIndent(by: 1) { return }
         super.insertTab(sender)
     }
 
     override func insertBacktab(_ sender: Any?) {
-        if blockAttributes(at: currentLocation).kind.isList { changeIndent(by: -1); return }
+        if adjustListIndent(by: -1) { return }
         super.insertBacktab(sender)
+    }
+
+    /// List indent, including an empty item whose paragraph has no characters yet.
+    private func adjustListIndent(by delta: Int) -> Bool {
+        let block = blockAttributes(at: currentLocation)
+        guard block.kind.isList else { return false }
+        let para = paragraphRange(at: currentLocation)
+        if contentRange(of: para).length == 0 {
+            changeIndentOfEmpty(block: block, para: para, delta: delta)
+        } else {
+            changeIndent(by: delta)
+        }
+        return true
+    }
+
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        if isStructuredEdit || isRestyling {
+            return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
+        }
+        if (replacementString ?? "").isEmpty, rejectsSeparatorDeletion(affectedCharRange) {
+            return false
+        }
+        return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
     }
 
     override func didChangeText() {
@@ -1073,6 +1101,195 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         }
     }
 
+    // MARK: Object paragraphs
+
+    /// Selecting only a separator must not delete the neighboring object or merge it into text.
+    private func rejectsSeparatorDeletion(_ range: NSRange) -> Bool {
+        guard range.length > 0, isSeparatorOnly(range) else { return false }
+        return separatorDeletionWouldMergeObject(range)
+    }
+
+    private func isSeparatorOnly(_ range: NSRange) -> Bool {
+        guard range.length > 0, NSMaxRange(range) <= nsString.length else { return false }
+        for index in range.location..<NSMaxRange(range) {
+            let character = nsString.character(at: index)
+            if character != 0x0A && character != 0x0D { return false }
+        }
+        return true
+    }
+
+    private func separatorDeletionWouldMergeObject(_ range: NSRange) -> Bool {
+        guard let storage = textStorage else { return false }
+        let before = range.location > 0 ? paragraphRange(at: range.location - 1) : nil
+        let afterLocation = NSMaxRange(range)
+        let after = afterLocation < nsString.length ? paragraphRange(at: afterLocation) : nil
+        return paragraphContainsObject(before, in: storage) || paragraphContainsObject(after, in: storage)
+    }
+
+    private func paragraphContainsObject(_ paragraph: NSRange?, in storage: NSAttributedString) -> Bool {
+        guard let paragraph, paragraph.location < storage.length else { return false }
+        let end = min(NSMaxRange(paragraph), storage.length)
+        var index = paragraph.location
+        while index < end {
+            if isObjectPayload(storage, at: index) { return true }
+            index += 1
+        }
+        return false
+    }
+
+    private func rangeIntersectsObject(_ range: NSRange) -> Bool {
+        guard let storage = textStorage, storage.length > 0 else { return false }
+        let start = paragraphRange(at: min(range.location, storage.length))
+        if paragraphContainsObject(start, in: storage) { return true }
+        guard range.length > 0 else { return false }
+        let end = paragraphRange(at: min(NSMaxRange(range) - 1, storage.length - 1))
+        return paragraphContainsObject(end, in: storage)
+    }
+
+    private func containsObjectPayload(_ text: NSAttributedString) -> Bool {
+        guard text.length > 0 else { return false }
+        for index in 0..<text.length where isObjectPayload(text, at: index) { return true }
+        return false
+    }
+
+    private func isObjectPayload(_ text: NSAttributedString, at index: Int) -> Bool {
+        guard index < text.length else { return false }
+        if text.attribute(.attachment, at: index, effectiveRange: nil) != nil { return true }
+        let character = (text.string as NSString).character(at: index)
+        guard character != 0x0A, character != 0x0D else { return false }
+        guard BlockAttributes(text.attributes(at: index, effectiveRange: nil)).kind == .divider else { return false }
+        return character == (RichTextCodec.dividerCharacter.utf16.first ?? 0)
+    }
+
+    /// Replaces `range` so attachments and dividers stay in their own paragraphs.
+    @discardableResult
+    private func replacePreservingObjects(in range: NSRange, with replacement: NSAttributedString) -> Bool {
+        guard let storage = textStorage else { return false }
+        if replacement.length == 0, rejectsSeparatorDeletion(range) { return true }
+
+        let ns = string as NSString
+        let insertingObjects = containsObjectPayload(replacement)
+        let title = paragraphRange(at: 0)
+        let keepTitle = insertingObjects && title.location == 0 && range.location <= NSMaxRange(title) && NSMaxRange(range) <= max(NSMaxRange(title), range.location)
+            && (ns.length == 0 || paragraphRange(at: min(range.location, ns.length)).location == 0)
+
+        let replaceRange: NSRange
+        let inserted: NSAttributedString
+        if keepTitle && ns.length > 0 {
+            let at = NSMaxRange(paragraphRange(at: 0))
+            var piece = NSMutableAttributedString()
+            if at == 0 || ns.character(at: at - 1) != 10 {
+                piece.append(NSAttributedString(string: "\n", attributes: BlockAttributes(kind: .title).dictionary))
+            }
+            let isolated = isolateObjects(replacement)
+            piece.append(isolated)
+            if at < ns.length, ns.character(at: at) != 10, !piece.string.hasSuffix("\n") {
+                piece.append(NSAttributedString(string: "\n", attributes: BlockAttributes(kind: .body).dictionary))
+            }
+            replaceRange = NSRange(location: at, length: 0)
+            inserted = piece
+        } else if insertingObjects || rangeIntersectsObject(range) {
+            let affected = affectedParagraphRange(for: range)
+            let spliced = NSMutableAttributedString(attributedString: affected.length == 0 ? NSAttributedString() : storage.attributedSubstring(from: affected))
+            let relativeLocation = min(max(0, range.location - affected.location), spliced.length)
+            let relativeLength = min(range.length, max(0, spliced.length - relativeLocation))
+            spliced.replaceCharacters(in: NSRange(location: relativeLocation, length: relativeLength), with: replacement)
+            var isolated = NSMutableAttributedString(attributedString: isolateObjects(spliced))
+            let endedWithBreak = affected.length > 0 && NSMaxRange(affected) <= ns.length && ns.character(at: NSMaxRange(affected) - 1) == 10
+            let moreAfter = NSMaxRange(affected) < ns.length
+            if (endedWithBreak || moreAfter), isolated.length == 0 || !isolated.string.hasSuffix("\n") {
+                let seed = isolated.length > 0 ? isolated.attributes(at: isolated.length - 1, effectiveRange: nil) : BlockAttributes(kind: .body).dictionary
+                var breakAttrs = seed
+                breakAttrs[.attachment] = nil
+                breakAttrs[.notasTerminal] = nil
+                isolated.append(NSAttributedString(string: "\n", attributes: breakAttrs))
+            }
+            replaceRange = affected
+            inserted = isolated
+        } else {
+            replaceRange = range
+            inserted = replacement
+        }
+
+        isStructuredEdit = true
+        defer { isStructuredEdit = false }
+        guard shouldChangeText(in: replaceRange, replacementString: inserted.string) else { return false }
+        breakUndoCoalescing()
+        storage.replaceCharacters(in: replaceRange, with: inserted)
+        didChangeText()
+        let caret = min(replaceRange.location + inserted.length, storage.length)
+        setSelectedRange(NSRange(location: caret, length: 0))
+        typingAttributes = styler.typingAttributes(for: BlockAttributes(kind: .body))
+        return true
+    }
+
+    private func affectedParagraphRange(for range: NSRange) -> NSRange {
+        let ns = nsString
+        if ns.length == 0 { return NSRange(location: 0, length: 0) }
+        if range.location >= ns.length {
+            return ns.paragraphRange(for: NSRange(location: ns.length, length: 0))
+        }
+        let start = ns.paragraphRange(for: NSRange(location: range.location, length: 0))
+        guard range.length > 0 else { return start }
+        let endLocation = min(NSMaxRange(range) - 1, ns.length - 1)
+        return NSUnionRange(start, ns.paragraphRange(for: NSRange(location: endLocation, length: 0)))
+    }
+
+    /// Gives every object payload its own paragraph without dropping the text beside it.
+    private func isolateObjects(_ source: NSAttributedString) -> NSAttributedString {
+        let ns = source.string as NSString
+        guard source.length > 0, containsObjectPayload(source) else { return source }
+        let out = NSMutableAttributedString()
+        var text = NSMutableAttributedString()
+
+        func newlineAttributes(from attrs: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
+            var copy = attrs
+            copy[.attachment] = nil
+            copy[.notasTerminal] = nil
+            return copy
+        }
+        func flushText(terminating: Bool) {
+            guard text.length > 0 else { return }
+            out.append(text)
+            if terminating, !(text.string as NSString).hasSuffix("\n") {
+                let attrs = text.attributes(at: text.length - 1, effectiveRange: nil)
+                out.append(NSAttributedString(string: "\n", attributes: newlineAttributes(from: attrs)))
+            }
+            text = NSMutableAttributedString()
+        }
+        func moreContent(after index: Int) -> Bool {
+            var next = index + 1
+            if next < ns.length {
+                let character = ns.character(at: next)
+                if character == 0x0A || character == 0x0D { next += 1 }
+            }
+            return next < ns.length
+        }
+
+        var index = 0
+        while index < ns.length {
+            if isObjectPayload(source, at: index) {
+                let follows = moreContent(after: index)
+                flushText(terminating: true)
+                out.append(source.attributedSubstring(from: NSRange(location: index, length: 1)))
+                if follows {
+                    let attrs = newlineAttributes(from: source.attributes(at: index, effectiveRange: nil))
+                    out.append(NSAttributedString(string: "\n", attributes: attrs))
+                }
+                index += 1
+                if index < ns.length {
+                    let character = ns.character(at: index)
+                    if character == 0x0A || character == 0x0D { index += 1 }
+                }
+            } else {
+                text.append(source.attributedSubstring(from: NSRange(location: index, length: 1)))
+                index += 1
+            }
+        }
+        if text.length > 0 { out.append(text) }
+        return out
+    }
+
     // MARK: Pasteboard
 
     override var writablePasteboardTypes: [NSPasteboard.PasteboardType] { [.notasBlocks, .string] }
@@ -1096,37 +1313,21 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
             do {
                 let doc: NoteDocument
                 if let clipboard = try? JSONDecoder().decode(BlockClipboard.self, from: data) {
-                    doc = try clipboard.imported(into: noteAssets)
-                } else { doc = try JSONDecoder().decode(NoteDocument.self, from: data) }
-                let containsObjects = doc.blocks.contains { $0.kind.isAttachment }
-                if containsObjects {
-                    // Objects always occupy whole paragraphs, even when pasted in the title or mid-sentence.
-                    let ns = string as NSString
-                    let para = ns.paragraphRange(for: selectedRange())
-                    // Keep the title intact; in the body, replace the actual selection.
-                    let range = para.location == 0 ? NSRange(location: NSMaxRange(para), length: 0) : selectedRange()
-                    let text = NSMutableAttributedString()
-                    if range.location == 0 || ns.character(at: range.location - 1) != 10 {
-                        text.append(NSAttributedString(string: "\n", attributes: blockAttributes(at: range.location).dictionary))
-                    }
-                    text.append(RichTextCodec.attributedString(from: doc))
-                    text.append(NSAttributedString(string: "\n", attributes: BlockAttributes(kind: .body).dictionary))
-                    guard shouldChangeText(in: range, replacementString: text.string) else { return false }
-                    textStorage?.replaceCharacters(in: range, with: text)
-                    didChangeText()
-                    setSelectedRange(NSRange(location: range.location + text.length, length: 0))
-                    typingAttributes = styler.typingAttributes(for: BlockAttributes(kind: .body))
+                    doc = try clipboard.imported(into: noteAssets).normalizingExternalIndentation()
                 } else {
-                    let text = RichTextCodec.attributedString(from: doc)
-                    let sel = selectedRange()
-                    if shouldChangeText(in: sel, replacementString: text.string) {
-                        textStorage?.replaceCharacters(in: sel, with: text)
-                        didChangeText()
-                        setSelectedRange(NSRange(location: sel.location + text.length, length: 0))
-                    }
+                    doc = try JSONDecoder().decode(NoteDocument.self, from: data).normalizingExternalIndentation()
                 }
-                return true
+                let text = RichTextCodec.attributedString(from: doc)
+                return replacePreservingObjects(in: selectedRange(), with: text)
             } catch { presentAssetError(error); return false }
+        }
+        if type == .string, let plain = pboard.string(forType: .string) {
+            let block = blockAttributes(at: selectedRange().location)
+            let typing = styler.typingAttributes(for: block.kind.isObject ? BlockAttributes(kind: .body) : block)
+            let text = NSAttributedString(string: plain, attributes: typing)
+            if containsObjectPayload(text) || rangeIntersectsObject(selectedRange()) {
+                return replacePreservingObjects(in: selectedRange(), with: text)
+            }
         }
         if [.fileURL, .png, .tiff, .pdf].contains(type) { return receiveImages(from: pboard) }
         return super.readSelection(from: pboard, type: type)

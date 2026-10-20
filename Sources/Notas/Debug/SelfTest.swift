@@ -238,8 +238,10 @@ enum SelfTest {
         check(!tv.isSlashMenuOpen, "menu closes after choosing")
         check(kinds(tv) == [.title, .checklist] && tv.document.blocks[1].plainText.isEmpty, "slash item applied (got \(kinds(tv)) '\(tv.document.blocks[1].plainText)')")
 
-        // An empty checklist line shows its checkbox right away (it has a fragment of its own).
-        check(tv.document.blocks.count == 3 && tv.document.blocks[1].kind == .checklist, "empty checklist line is materialized")
+        // An empty checklist line shows its checkbox right away (it has a newline of its own)
+        // and does not grow a phantom body after that newline.
+        check(tv.string.hasSuffix("\n") && tv.document.blocks.count == 2 && tv.document.blocks[1].kind == .checklist,
+              "empty checklist line is materialized")
 
         // Slash menu: arrows + divider.
         type(tv, "x")

@@ -78,9 +78,26 @@ struct TabStrip: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            ForEach(app.tabs, id: \.self) { id in
-                if let note = app.store.notes[id] {
-                    TabItem(note: note, isActive: id == app.activeNoteID, style: style)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(spacing: 3) {
+                        ForEach(app.tabs, id: \.self) { id in
+                            if let note = app.store.notes[id] {
+                                TabItem(note: note, isActive: id == app.activeNoteID, style: style)
+                                    .id(id)
+                            }
+                        }
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .onChange(of: app.activeNoteID, initial: true) { _, id in
+                    if let id { proxy.scrollTo(id) }
+                }
+                .onChange(of: app.tabs) {
+                    if let id = app.activeNoteID { proxy.scrollTo(id) }
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { _ in
+                    if let id = app.activeNoteID { proxy.scrollTo(id) }
                 }
             }
             Button {
@@ -140,6 +157,7 @@ struct TabItem: View {
         .background(isActive ? style.surface : (hovering ? style.surface.opacity(0.5) : .clear),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
+        .accessibilityIdentifier("note-tab-\(note.id.uuidString)")
         .onTapGesture { app.activate(note.id) }
         .onHover { hovering = $0 }
         .contextMenu {

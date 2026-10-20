@@ -212,6 +212,7 @@ struct NoteChatSidebar: View {
                 }
                 .focused($composing)
                 .accessibilityLabel("Message about this note")
+                .accessibilityIdentifier("note-chat-composer")
             HStack {
                 Text("Changes need your review").font(.system(size: 10)).foregroundStyle(style.tertiary)
                 Spacer()
@@ -219,6 +220,7 @@ struct NoteChatSidebar: View {
                     Button("Stop", systemImage: "stop.fill") { assistant.stop(noteID) }.controlSize(.small)
                 } else {
                     Button("Send", systemImage: "arrow.up") { assistant.send(noteID) }
+                        .accessibilityIdentifier("note-chat-send")
                         .buttonStyle(.borderedProminent).controlSize(.small)
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(!assistant.hasKey || current.awaitingReply || current.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

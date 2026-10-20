@@ -11,7 +11,7 @@ struct MainView: View {
         GeometryReader { proxy in
             layout(style, width: proxy.size.width)
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
-                .onChange(of: proxy.size.width) { _, width in app.windowWidth = width }
+                .onChange(of: proxy.size.width, initial: true) { _, width in app.windowWidth = width }
         }
         .ignoresSafeArea()
         .animation(.snappy(duration: 0.25), value: app.isChatOpen)
@@ -50,6 +50,12 @@ struct MainView: View {
                         floatingChat(style, width: min(app.chatWidth, max(AppState.minChatWidth, width - 32)))
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
+                }
+            }
+            .overlay(alignment: .top) {
+                if app.isPaletteOpen {
+                    CommandPalette()
+                        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                 }
             }
     }
@@ -97,9 +103,7 @@ struct MainView: View {
                 Color.clear
                     .frame(width: 9)
                     .contentShape(Rectangle())
-                    .onHover { inside in
-                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                    }
+                    .background(ResizeCursorRegion())
                     .gesture(
                         DragGesture(minimumDistance: 1)
                             .onChanged { value in
@@ -110,7 +114,6 @@ struct MainView: View {
                             .onEnded { _ in resizeStart = nil }
                     )
             }
-            .onDisappear { NSCursor.pop() }
     }
 
     private func workspace(_ style: ResolvedStyle, trailingInset: CGFloat) -> some View {
@@ -131,6 +134,8 @@ struct MainView: View {
 
             NotebookRail()
                 .padding(.leading, 12)
+                .padding(.top, 46)
+                .padding(.bottom, 14)
                 .frame(maxHeight: .infinity, alignment: .center)
 
             ZStack(alignment: .topLeading) {
@@ -165,13 +170,17 @@ struct MainView: View {
             .allowsHitTesting(app.isStylePanelOpen)
             .animation(.snappy(duration: 0.25), value: app.isStylePanelOpen)
             .zIndex(2)
-
-            if app.isPaletteOpen {
-                CommandPalette()
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
-                    .zIndex(3)
-            }
         }
+    }
+}
+
+private struct ResizeCursorRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> CursorView { CursorView() }
+    func updateNSView(_ view: CursorView, context: Context) {}
+
+    final class CursorView: NSView {
+        override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 

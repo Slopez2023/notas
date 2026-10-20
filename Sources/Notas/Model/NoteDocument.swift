@@ -30,6 +30,55 @@ struct NoteDocument: Codable, Equatable {
     }
 }
 
+extension NoteDocument {
+    static let indentBounds = 0...4
+
+    /// Imported indentation is an integer in `0...4`. Values outside that range are clamped
+    /// with comparisons only, so `Int.max` and negatives cannot overflow later arithmetic.
+    static func normalizedIndent(_ value: Int) -> Int {
+        if value < indentBounds.lowerBound { return indentBounds.lowerBound }
+        if value > indentBounds.upperBound { return indentBounds.upperBound }
+        return value
+    }
+
+    static func storedIndent(_ value: Int?) -> Int? {
+        guard let value else { return nil }
+        let clamped = normalizedIndent(value)
+        return clamped == 0 ? nil : clamped
+    }
+
+    /// `current` is normalized before `delta` is applied. The delta itself is limited to one step.
+    static func indent(applying delta: Int, to current: Int) -> Int {
+        let base = normalizedIndent(current)
+        let step = delta > 0 ? 1 : (delta < 0 ? -1 : 0)
+        return normalizedIndent(base + step)
+    }
+
+    func normalizingExternalIndentation() -> NoteDocument {
+        var copy = self
+        for index in copy.blocks.indices {
+            copy.blocks[index].indent = Self.storedIndent(copy.blocks[index].indent)
+        }
+        return copy
+    }
+
+    private enum CodingKeys: String, CodingKey { case blocks }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        blocks = try container.decode([Block].self, forKey: .blocks).map { block in
+            var block = block
+            block.indent = Self.storedIndent(block.indent)
+            return block
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(blocks, forKey: .blocks)
+    }
+}
+
 enum BlockKind: String, Codable, CaseIterable {
     case title
     case body

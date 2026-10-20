@@ -23,16 +23,28 @@ enum ChatModel: String, CaseIterable, Identifiable, Sendable {
     var reasoningLabel: String { usesChatCompletions ? "High reasoning" : "Brief reasoning" }
 }
 
-struct ChatStreamUpdate: Sendable {
-    var thought: String
-    var visibleReply: String
-    var output: String
-    var finished: Bool
-}
-
 struct ChatTurn: Sendable {
     let role: String
     let text: String
+}
+
+struct AssistantPreview: Sendable, Equatable {
+    var thought: String
+    var text: String
+}
+
+struct CompletedReply: Sendable {
+    let reply: AssistantReply
+    let thought: String?
+    fileprivate init(reply: AssistantReply, thought: String?) {
+        self.reply = reply
+        self.thought = thought
+    }
+}
+
+enum AssistantEvent: Sendable {
+    case preview(AssistantPreview)
+    case completed(CompletedReply)
 }
 
 /// One stateless request to an OpenAI-compatible endpoint. The model gets the note snapshot and the
@@ -44,12 +56,14 @@ struct ChatClient: Sendable {
     let apiKey: String
     let model: ChatModel
     /// OpenCode routes requests by session; one id per client keeps a conversation's cache warm.
-    private let session = UUID().uuidString.lowercased()
+    private let sessionID = UUID().uuidString.lowercased()
+    private let session: URLSession
 
-    init(apiKey: String, baseURL: URL = ChatClient.defaultBaseURL, model: ChatModel = .luna) {
+    init(apiKey: String, baseURL: URL = ChatClient.defaultBaseURL, model: ChatModel = .luna, session: URLSession? = nil) {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.model = model
+        self.session = session ?? Self.urlSession
     }
 
     private static let urlSession: URLSession = {
@@ -64,7 +78,7 @@ struct ChatClient: Sendable {
         var request = URLRequest(url: baseURL.appendingPathComponent(model.usesChatCompletions ? "chat/completions" : "responses"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue(session, forHTTPHeaderField: "x-opencode-session")
+        request.setValue(sessionID, forHTTPHeaderField: "x-opencode-session")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Notas/1.0", forHTTPHeaderField: "User-Agent")
         let body: [String: Any]
@@ -90,7 +104,7 @@ struct ChatClient: Sendable {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let data: Data, response: URLResponse
-        do { (data, response) = try await Self.urlSession.data(for: request) }
+        do { (data, response) = try await session.data(for: request) }
         catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch let error as URLError {
             switch error.code {
@@ -129,13 +143,17 @@ struct ChatClient: Sendable {
         return try Self.outputText(in: json)
     }
 
-    /// Streams a Responses reply. Reasoning summary deltas arrive before the answer. Yields are
-    /// coalesced to about 80ms, and the final yield always carries the full output.
-    func stream(instructions: String, turns: [ChatTurn], schema: [String: Any], effort: String) -> AsyncThrowingStream<ChatStreamUpdate, Error> {
+    /// One validated reply. Previews are provisional. Only a successful terminal response is `.completed`.
+    func reply(to turns: [ChatTurn], effort: String) -> AsyncThrowingStream<AssistantEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await self.readStream(instructions: instructions, turns: turns, schema: schema, effort: effort, continuation: continuation)
+                    if self.model.usesChatCompletions {
+                        let text = try await self.complete(instructions: NoteEdit.instructions, turns: turns, schema: AssistantReply.schema)
+                        continuation.yield(.completed(try Self.completedReply(text: text, thought: nil)))
+                    } else {
+                        try await self.readStream(turns: turns, effort: effort, continuation: continuation)
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -145,26 +163,26 @@ struct ChatClient: Sendable {
         }
     }
 
-    private func readStream(instructions: String, turns: [ChatTurn], schema: [String: Any], effort: String, continuation: AsyncThrowingStream<ChatStreamUpdate, Error>.Continuation) async throws {
+    private func readStream(turns: [ChatTurn], effort: String, continuation: AsyncThrowingStream<AssistantEvent, Error>.Continuation) async throws {
         var request = URLRequest(url: baseURL.appendingPathComponent("responses"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue(session, forHTTPHeaderField: "x-opencode-session")
+        request.setValue(sessionID, forHTTPHeaderField: "x-opencode-session")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Notas/1.0", forHTTPHeaderField: "User-Agent")
         let body: [String: Any] = [
             "model": model.rawValue,
             "reasoning": ["effort": effort, "summary": "auto"],
-            "instructions": instructions,
+            "instructions": NoteEdit.instructions,
             "input": turns.map { ["role": $0.role, "content": $0.text] },
             "max_output_tokens": 32_000,
             "stream": true,
-            "text": ["format": ["type": "json_schema", "name": "note_reply", "strict": true, "schema": schema]]
+            "text": ["format": ["type": "json_schema", "name": "note_reply", "strict": true, "schema": AssistantReply.schema]]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let asyncBytes: URLSession.AsyncBytes
         let response: URLResponse
-        do { (asyncBytes, response) = try await Self.urlSession.bytes(for: request) }
+        do { (asyncBytes, response) = try await session.bytes(for: request) }
         catch { throw Self.transport(error) }
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
@@ -183,76 +201,91 @@ struct ChatClient: Sendable {
                 throw AssistantError.message(message)
             }
             let text = try Self.outputText(in: json)
-            continuation.yield(ChatStreamUpdate(thought: "", visibleReply: Self.visibleReply(in: text), output: text, finished: true))
+            continuation.yield(.completed(try Self.completedReply(text: text, thought: nil)))
             return
         }
-        var thought = "", output = "", finished = false
+        var thought = "", output = ""
         var lastYield = ContinuousClock.now - .seconds(1)
-        func emit(force: Bool) {
+        func emitPreview() {
             let now = ContinuousClock.now
-            if !force, now - lastYield < .milliseconds(80) { return }
+            if now - lastYield < .milliseconds(80) { return }
             lastYield = now
-            continuation.yield(ChatStreamUpdate(thought: thought, visibleReply: Self.visibleReply(in: output), output: output, finished: force))
+            continuation.yield(.preview(AssistantPreview(thought: thought, text: Self.visibleReply(in: output))))
         }
         do {
-        for try await line in asyncBytes.lines {
-            try Task.checkCancellation()
-            guard line.hasPrefix("data:") else { continue }
-            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            if payload == "[DONE]" {
-                finished = true
-                emit(force: true)
-                return
-            }
-            guard let data = payload.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            if let error = json["error"] as? [String: Any], let message = error["message"] as? String {
-                throw AssistantError.message(message)
-            }
-            switch json["type"] as? String ?? "" {
-            case "response.reasoning_summary_text.delta":
-                if let delta = json["delta"] as? String { thought += delta; emit(force: false) }
-            case "response.reasoning_summary_text.done":
-                if let text = json["text"] as? String, !text.isEmpty { thought = text }
-                emit(force: false)
-            case "response.output_text.delta":
-                if let delta = json["delta"] as? String { output += delta; emit(force: false) }
-            case "response.output_text.done":
-                if let text = json["text"] as? String, !text.isEmpty { output = text }
-                emit(force: false)
-            case "response.refusal.delta", "response.refusal.done":
-                throw AssistantError.message("The assistant declined this request.")
-            case "response.incomplete":
-                throw AssistantError.message("The reply was cut off. Try a shorter request or a smaller note.")
-            case "response.completed":
-                if let response = json["response"] as? [String: Any] {
-                    if response["status"] as? String == "incomplete" {
+            for try await line in asyncBytes.lines {
+                try Task.checkCancellation()
+                guard line.hasPrefix("data:") else { continue }
+                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                if payload == "[DONE]" {
+                    throw AssistantError.message("The assistant didn't return a reply.")
+                }
+                guard let data = payload.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                if let error = json["error"] as? [String: Any], let message = error["message"] as? String {
+                    throw AssistantError.message(message)
+                }
+                if let nested = json["response"] as? [String: Any], nested["status"] as? String == "failed" {
+                    let message = (nested["error"] as? [String: Any])?["message"] as? String
+                    throw AssistantError.message(message ?? "The assistant didn't return a reply.")
+                }
+                switch json["type"] as? String ?? "" {
+                case "response.reasoning_summary_text.delta":
+                    if let delta = json["delta"] as? String { thought += delta; emitPreview() }
+                case "response.reasoning_summary_text.done":
+                    if let text = json["text"] as? String, !text.isEmpty { thought = text }
+                    emitPreview()
+                case "response.output_text.delta":
+                    if let delta = json["delta"] as? String { output += delta; emitPreview() }
+                case "response.output_text.done":
+                    if let text = json["text"] as? String, !text.isEmpty { output = text }
+                    emitPreview()
+                case "response.refusal.delta", "response.refusal.done":
+                    throw AssistantError.message("The assistant declined this request.")
+                case "response.incomplete", "response.failed":
+                    if json["type"] as? String == "response.incomplete" {
                         throw AssistantError.message("The reply was cut off. Try a shorter request or a smaller note.")
                     }
-                    if let text = try? Self.outputText(in: response) { output = text }
+                    let nested = json["response"] as? [String: Any]
+                    let message = (nested?["error"] as? [String: Any])?["message"] as? String
+                    throw AssistantError.message(message ?? "The assistant didn't return a reply.")
+                case "response.completed":
+                    guard let response = json["response"] as? [String: Any] else {
+                        throw AssistantError.message("The assistant didn't return a reply.")
+                    }
+                    let text = try Self.outputText(in: response)
+                    continuation.yield(.completed(try Self.completedReply(text: text, thought: thought)))
+                    return
+                case "error":
+                    let message = (json["message"] as? String) ?? ((json["error"] as? [String: Any])?["message"] as? String)
+                    throw AssistantError.message(message ?? "OpenCode returned an error.")
+                default:
+                    break
                 }
-                finished = true
-                emit(force: true)
-                return
-            case "error":
-                let message = (json["message"] as? String) ?? ((json["error"] as? [String: Any])?["message"] as? String)
-                throw AssistantError.message(message ?? "OpenCode returned an error.")
-            default:
-                break
             }
-        }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as AssistantError {
+            throw error
         } catch {
             throw Self.transport(error)
         }
-        guard finished else { throw AssistantError.message("The assistant didn't return a reply.") }
+        throw AssistantError.message("The assistant didn't return a reply.")
+    }
+
+    private static func completedReply(text: String, thought: String?) throws -> CompletedReply {
+        guard text.utf8.count <= 250_000 else { throw AssistantError.message("The reply was too large.") }
+        let reply = try JSONDecoder().decode(AssistantReply.self, from: Data(text.utf8))
+        let cleaned = thought?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let kept = cleaned?.isEmpty == false ? String(cleaned!.prefix(4_000)) : nil
+        return CompletedReply(reply: reply, thought: kept)
     }
 
     /// The reply field of a partial note-edit JSON object. Raw JSON stays hidden until that string begins.
+    /// `\u` escapes are UTF-16 units. An unpaired high surrogate stays unemitted until its low surrogate arrives.
     static func visibleReply(in json: String) -> String {
-        let chars = Array(json)
-        let needle = Array("\"reply\"")
+        let chars = Array(json.unicodeScalars)
+        let needle = Array("\"reply\"".unicodeScalars)
         guard needle.count <= chars.count else { return "" }
         var start = 0
         while start + needle.count <= chars.count {
@@ -261,26 +294,45 @@ struct ChatClient: Sendable {
         }
         guard start + needle.count <= chars.count else { return "" }
         var index = start + needle.count
-        while index < chars.count, chars[index].isWhitespace || chars[index] == ":" { index += 1 }
+        while index < chars.count, Character(chars[index]).isWhitespace || chars[index] == ":" { index += 1 }
         guard index < chars.count, chars[index] == "\"" else { return "" }
         index += 1
         var result = ""
         var escaped = false
+        var pendingHigh: UInt32?
+        func appendUnit(_ unit: UInt32) {
+            if let high = pendingHigh {
+                pendingHigh = nil
+                if (0xDC00...0xDFFF).contains(unit), let scalar = Self.scalar(high: high, low: unit) {
+                    result.append(Character(scalar))
+                    return
+                }
+            }
+            if (0xD800...0xDBFF).contains(unit) {
+                pendingHigh = unit
+                return
+            }
+            guard !(0xDC00...0xDFFF).contains(unit), let scalar = Unicode.Scalar(unit) else { return }
+            result.append(Character(scalar))
+        }
         while index < chars.count {
             let character = chars[index]
             if escaped {
-                switch character {
-                case "n": result.append("\n")
-                case "r": result.append("\r")
-                case "t": result.append("\t")
-                case "\"", "\\", "/": result.append(character)
-                case "u":
+                if character == "u" {
                     guard index + 4 < chars.count else { return result }
-                    let hex = String(chars[(index + 1)...(index + 4)])
-                    guard let value = UInt32(hex, radix: 16), let scalar = Unicode.Scalar(value) else { return result }
-                    result.append(Character(scalar))
+                    let hex = String(chars[(index + 1)...(index + 4)].map { Character($0) })
+                    guard let value = UInt32(hex, radix: 16) else { return result }
+                    appendUnit(value)
                     index += 4
-                default: result.append(character)
+                } else {
+                    pendingHigh = nil
+                    switch character {
+                    case "n": result.append("\n")
+                    case "r": result.append("\r")
+                    case "t": result.append("\t")
+                    case "\"", "\\", "/": result.append(Character(character))
+                    default: result.append(Character(character))
+                    }
                 }
                 escaped = false
             } else if character == "\\" {
@@ -288,26 +340,44 @@ struct ChatClient: Sendable {
             } else if character == "\"" {
                 return result
             } else {
-                result.append(character)
+                pendingHigh = nil
+                result.append(Character(character))
             }
             index += 1
         }
         return result
     }
 
+    private static func scalar(high: UInt32, low: UInt32) -> Unicode.Scalar? {
+        let value = 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
+        return Unicode.Scalar(value)
+    }
+
+    /// Scans every content part. A refusal or failed status wins over earlier output text.
     private static func outputText(in json: [String: Any]) throws -> String {
         if json["status"] as? String == "incomplete" {
             throw AssistantError.message("The reply was cut off. Try a shorter request or a smaller note.")
         }
-        for item in json["output"] as? [[String: Any]] ?? [] where item["type"] as? String == "message" {
+        if json["status"] as? String == "failed" {
+            let message = (json["error"] as? [String: Any])?["message"] as? String
+            throw AssistantError.message(message ?? "The assistant didn't return a reply.")
+        }
+        var refused = false
+        var texts: [String] = []
+        for item in json["output"] as? [[String: Any]] ?? [] {
+            if item["type"] as? String == "refusal" || item["refusal"] != nil { refused = true }
             for part in item["content"] as? [[String: Any]] ?? [] {
-                if part["type"] as? String == "refusal" {
-                    throw AssistantError.message("The assistant declined this request.")
+                if part["type"] as? String == "refusal" || part["refusal"] != nil { refused = true }
+                if part["type"] as? String == "output_text", let text = part["text"] as? String {
+                    texts.append(text)
                 }
-                if part["type"] as? String == "output_text", let text = part["text"] as? String { return text }
             }
         }
-        throw AssistantError.message("The assistant didn't return a reply.")
+        if refused { throw AssistantError.message("The assistant declined this request.") }
+        guard let text = texts.last, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AssistantError.message("The assistant didn't return a reply.")
+        }
+        return text
     }
 
     private static func collect(_ bytes: URLSession.AsyncBytes) async throws -> Data {

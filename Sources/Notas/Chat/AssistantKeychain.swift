@@ -3,6 +3,19 @@ import Security
 
 /// Generic-password storage for the user's OpenCode API key. The key lives only here and in the
 /// Codex child's environment; it is never written to the note library, chat history, or logs.
+/// Credential reads and writes for the assistant. Production uses the Keychain; tests pass memory.
+struct AssistantCredentialAccess {
+    var read: () -> String?
+    var save: (String) throws -> Void
+    var delete: () -> Void
+
+    static let keychain = AssistantCredentialAccess(
+        read: { AssistantKeychain.read() },
+        save: { try AssistantKeychain.save($0) },
+        delete: { AssistantKeychain.delete() }
+    )
+}
+
 enum AssistantKeychain {
     static var service = "com.stephenlopez.notas.assistant"
     private static let account = "opencode-api-key"

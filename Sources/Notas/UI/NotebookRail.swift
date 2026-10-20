@@ -4,70 +4,81 @@ import SwiftUI
 struct NotebookRail: View {
     @Environment(AppState.self) private var app
     @State private var expanded = false
-    @State private var editing: NotebookEditTarget?
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
         let style = app.chromeStyle
-        VStack(alignment: .leading, spacing: 2) {
-            RailRow(expanded: expanded, style: style, isSelected: app.drawer == .all,
-                    label: "All notes", count: app.store.notes.count) {
-                Image(systemName: "square.grid.2x2.fill").font(.system(size: 9.5))
-            } action: { app.toggleDrawer(.all) }
+        GeometryReader { bounds in
+            VStack(alignment: .leading, spacing: 2) {
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        RailRow(expanded: expanded, style: style, isSelected: app.drawer == .all,
+                                label: "All notes", count: app.store.notes.count) {
+                            Image(systemName: "square.grid.2x2.fill").font(.system(size: 9.5))
+                        } action: { app.toggleDrawer(.all) }
 
-            RailRow(expanded: expanded, style: style, isSelected: app.drawer == .pinned,
-                    label: "Pinned", count: app.store.pinnedNotes.count) {
-                Image(systemName: "pin.fill").font(.system(size: 9.5))
-            } action: { app.toggleDrawer(.pinned) }
+                        RailRow(expanded: expanded, style: style, isSelected: app.drawer == .pinned,
+                                label: "Pinned", count: app.store.pinnedNotes.count) {
+                            Image(systemName: "pin.fill").font(.system(size: 9.5))
+                        } action: { app.toggleDrawer(.pinned) }
 
-            Rectangle().fill(style.tertiary.opacity(0.25)).frame(height: 1).padding(.vertical, 5).padding(.horizontal, 4)
+                        Rectangle().fill(style.tertiary.opacity(0.25)).frame(height: 1).padding(.vertical, 5).padding(.horizontal, 4)
 
-            ForEach(app.store.sortedNotebooks) { notebook in
-                let selected = app.drawer == .notebook(notebook.id)
-                let current = app.activeNote?.notebookID == notebook.id
-                RailRow(expanded: expanded, style: style, isSelected: selected,
-                        label: notebook.name, count: app.store.count(in: notebook.id)) {
-                    Circle()
-                        .fill(Color(hex: notebook.color.hex))
-                        .frame(width: 9, height: 9)
-                        .overlay {
-                            if current && !expanded {
-                                Circle().stroke(Color(hex: notebook.color.hex), lineWidth: 1.5).frame(width: 15, height: 15)
+                        ForEach(app.store.sortedNotebooks) { notebook in
+                            let selected = app.drawer == .notebook(notebook.id)
+                            let current = app.activeNote?.notebookID == notebook.id
+                            RailRow(expanded: expanded, style: style, isSelected: selected,
+                                    label: notebook.name, count: app.store.count(in: notebook.id)) {
+                                Circle()
+                                    .fill(Color(hex: notebook.color.hex))
+                                    .frame(width: 9, height: 9)
+                                    .overlay {
+                                        if current && !expanded {
+                                            Circle().stroke(Color(hex: notebook.color.hex), lineWidth: 1.5).frame(width: 15, height: 15)
+                                        }
+                                    }
+                            } action: { app.toggleDrawer(.notebook(notebook.id)) }
+                            .contextMenu { notebookMenu(notebook) }
+                            .popover(isPresented: Binding(get: { app.notebookEditTarget == .rename(notebook.id) }, set: { if !$0 { app.notebookEditTarget = nil } }),
+                                     arrowEdge: .trailing) {
+                                NotebookEditor(initialName: notebook.name, initialColor: notebook.color, confirmLabel: "Save") { name, color in
+                                    app.store.renameNotebook(notebook.id, to: name)
+                                    app.store.recolorNotebook(notebook.id, to: color)
+                                    app.notebookEditTarget = nil
+                                }
                             }
                         }
-                } action: { app.toggleDrawer(.notebook(notebook.id)) }
-                .contextMenu { notebookMenu(notebook) }
-                .popover(isPresented: Binding(get: { editing == .rename(notebook.id) }, set: { if !$0 { editing = nil } }),
-                         arrowEdge: .trailing) {
-                    NotebookEditor(initialName: notebook.name, initialColor: notebook.color, confirmLabel: "Save") { name, color in
-                        app.store.renameNotebook(notebook.id, to: name)
-                        app.store.recolorNotebook(notebook.id, to: color)
-                        editing = nil
+                    }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(height: min(contentHeight, max(0, bounds.size.height - 46)))
+                RailRow(expanded: expanded, style: style, isSelected: false, label: "New notebook", count: nil) {
+                    Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
+                } action: { app.notebookEditTarget = .new }
+                .accessibilityIdentifier("notebook-new")
+                .popover(isPresented: Binding(get: { app.notebookEditTarget == .new }, set: { if !$0 { app.notebookEditTarget = nil } }), arrowEdge: .trailing) {
+                    NotebookEditor(initialName: "", initialColor: nil, confirmLabel: "Create") { name, color in
+                        let nb = app.store.createNotebook(name: name, color: color)
+                        app.notebookEditTarget = nil
+                        app.toggleDrawer(.notebook(nb.id))
                     }
                 }
             }
-
-            RailRow(expanded: expanded, style: style, isSelected: false, label: "New notebook", count: nil) {
-                Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
-            } action: { editing = .new }
-            .popover(isPresented: Binding(get: { editing == .new }, set: { if !$0 { editing = nil } }), arrowEdge: .trailing) {
-                NotebookEditor(initialName: "", initialColor: nil, confirmLabel: "Create") { name, color in
-                    let nb = app.store.createNotebook(name: name, color: color)
-                    editing = nil
-                    app.toggleDrawer(.notebook(nb.id))
-                }
+            .padding(.vertical, 9)
+            .padding(.horizontal, 6)
+            .frame(width: expanded ? 196 : 34, alignment: .leading)
+            .background(style.surface.opacity(expanded ? 0.98 : 0.85),
+                        in: RoundedRectangle(cornerRadius: expanded ? 14 : 17, style: .continuous))
+            .shadow(color: .black.opacity(expanded ? (style.theme.isDark ? 0.45 : 0.12) : 0), radius: 18, y: 8)
+            .onHover { hovering in
+                withAnimation(.snappy(duration: 0.24)) { expanded = hovering || app.notebookEditTarget != nil }
             }
+            .frame(maxHeight: .infinity, alignment: .center)
         }
-        .padding(.vertical, 9)
-        .padding(.horizontal, 6)
-        .frame(width: expanded ? 196 : 34, alignment: .leading)
-        .background(style.surface.opacity(expanded ? 0.98 : 0.85),
-                    in: RoundedRectangle(cornerRadius: expanded ? 14 : 17, style: .continuous))
-        .shadow(color: .black.opacity(expanded ? (style.theme.isDark ? 0.45 : 0.12) : 0), radius: 18, y: 8)
-        .onHover { hovering in
-            withAnimation(.snappy(duration: 0.24)) { expanded = hovering || editing != nil }
-        }
-        .onChange(of: editing) { _, value in
-            if value == nil { withAnimation(.snappy(duration: 0.24)) { expanded = false } }
+        .frame(width: expanded ? 196 : 34)
+        .onChange(of: app.notebookEditTarget, initial: true) { _, value in
+            withAnimation(.snappy(duration: 0.24)) { expanded = value != nil }
         }
     }
 
@@ -75,7 +86,7 @@ struct NotebookRail: View {
     private func notebookMenu(_ notebook: Notebook) -> some View {
         Button("New Note in \(notebook.name)") { app.newNote(in: notebook.id) }
         Divider()
-        Button("Rename…") { editing = .rename(notebook.id) }
+        Button("Rename…") { app.notebookEditTarget = .rename(notebook.id) }
         Menu("Color") {
             ForEach(NotebookColor.allCases) { color in
                 Button(color.rawValue.capitalized) { app.store.recolorNotebook(notebook.id, to: color) }
@@ -148,6 +159,7 @@ struct RailRow<Icon: View>: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .accessibilityLabel(label)
         .help(expanded ? "" : label)
     }
 }
@@ -167,6 +179,7 @@ struct NotebookEditor: View {
             TextField("Notebook name", text: $name)
                 .textFieldStyle(.roundedBorder)
                 .focused($focused)
+                .accessibilityIdentifier("notebook-create-name")
                 .onSubmit(confirm)
             HStack(spacing: 7) {
                 ForEach(NotebookColor.allCases) { c in
@@ -182,6 +195,7 @@ struct NotebookEditor: View {
             HStack {
                 Spacer()
                 Button(confirmLabel, action: confirm)
+                    .accessibilityIdentifier("notebook-create-confirm")
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }

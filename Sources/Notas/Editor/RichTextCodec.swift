@@ -8,6 +8,9 @@ extension NSAttributedString.Key {
     static let notasMarks = NSAttributedString.Key("notas.marks")      // InlineMarks raw value
     static let notasHighlightColor = NSAttributedString.Key("notas.highlightColor") // InkColor raw value
     static let notasInk = NSAttributedString.Key("notas.ink")          // InkColor raw value
+    /// Internal marker on the synthetic terminator of a final empty non-body block.
+    /// It is not a character, and it is never written to JSON or plain clipboard text.
+    static let notasTerminal = NSAttributedString.Key("notas.terminal")
 
     // Presentation only, recomputed by the styler and read by the layout fragment.
     static let notasOrdinal = NSAttributedString.Key("notas.ordinal")  // Int, position in a numbered list
@@ -63,16 +66,23 @@ enum RichTextCodec {
 
     static func attributedString(from document: NoteDocument) -> NSMutableAttributedString {
         let out = NSMutableAttributedString()
+        let last = document.blocks.count - 1
         for (i, block) in document.blocks.enumerated() {
-            let blockAttrs = BlockAttributes(kind: block.kind, checked: block.checked ?? false, indent: block.indent ?? 0).dictionary
+            let semantic = BlockAttributes(kind: block.kind, checked: block.checked ?? false, indent: NoteDocument.normalizedIndent(block.indent ?? 0))
+            let blockAttrs = semantic.dictionary
+            let isLast = i == last
             if block.kind.isAttachment {
                 var attrs = blockAttrs
                 attrs[.attachment] = RichBlockAttachment(block: block)
                 out.append(NSAttributedString(string: "\u{FFFC}", attributes: attrs))
+                if !isLast { out.append(NSAttributedString(string: "\n", attributes: blockAttrs)) }
             } else if block.kind == .divider {
                 out.append(NSAttributedString(string: dividerCharacter, attributes: blockAttrs))
+                if !isLast { out.append(NSAttributedString(string: "\n", attributes: blockAttrs)) }
             } else {
+                var wroteText = false
                 for run in block.runs where !run.text.isEmpty {
+                    wroteText = true
                     var attrs = blockAttrs
                     if !run.marks.isEmpty { attrs[.notasMarks] = run.marks.rawValue }
                     if let link = run.link { attrs[.link] = link }
@@ -80,9 +90,15 @@ enum RichTextCodec {
                     if let c = run.ink { attrs[.notasInk] = c.rawValue }
                     out.append(NSAttributedString(string: run.text, attributes: attrs))
                 }
-            }
-            if i < document.blocks.count - 1 {
-                out.append(NSAttributedString(string: "\n", attributes: blockAttrs))
+                if !isLast {
+                    out.append(NSAttributedString(string: "\n", attributes: blockAttrs))
+                } else if !wroteText && block.kind != .body && block.kind != .title {
+                    // A final empty title stays an empty string so the caret remains in the title.
+                    // Other empty blocks need a newline or their kind is dropped on the way back.
+                    var terminator = blockAttrs
+                    terminator[.notasTerminal] = true
+                    out.append(NSAttributedString(string: "\n", attributes: terminator))
+                }
             }
         }
         return out
@@ -92,38 +108,96 @@ enum RichTextCodec {
     static func document(from string: NSAttributedString, forceTitle: Bool = true) -> NoteDocument {
         let ns = string.string as NSString
         let length = ns.length
-        var blocks: [Block] = []
+        var parsed: [Block] = []
         var start = 0
 
         while true {
             var end = 0, contentsEnd = 0
             ns.getParagraphStart(nil, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: start, length: 0))
-
-            let attrs = start < length ? BlockAttributes(string.attributes(at: start, effectiveRange: nil)) : BlockAttributes()
-            var kind = attrs.kind
-            if forceTitle { kind = blocks.isEmpty ? .title : (kind == .title ? .body : kind) }
-
-            let content = NSRange(location: start, length: contentsEnd - start)
-            if kind.isAttachment, start < length,
-               let attachment = string.attribute(.attachment, at: start, effectiveRange: nil) as? RichBlockAttachment {
-                blocks.append(attachment.block)
-            } else {
-                blocks.append(Block(kind: kind,
-                                    checked: kind == .checklist ? attrs.checked : nil,
-                                    indent: attrs.indent > 0 ? attrs.indent : nil,
-                                    runs: kind == .divider ? [] : runs(in: string, range: content)))
-            }
+            let content = NSRange(location: start, length: max(0, contentsEnd - start))
+            parsed.append(contentsOf: blocks(in: string, content: content, paragraphStart: start, forceTitle: forceTitle, emitted: parsed.count))
 
             if end >= length {
-                // Text ending in a newline has one more, empty paragraph.
-                if end > contentsEnd, length > 0 {
-                    blocks.append(Block(kind: .body, runs: []))
+                // A newline ends a paragraph. Without the terminal marker it also means a real empty block follows.
+                if end > contentsEnd, length > 0, !hasTerminalMarker(string, at: contentsEnd) {
+                    parsed.append(Block(kind: .body, runs: []))
                 }
                 break
             }
             start = end
         }
-        return NoteDocument(blocks: blocks)
+        return parsed.isEmpty ? .empty : NoteDocument(blocks: parsed)
+    }
+
+    private static func hasTerminalMarker(_ string: NSAttributedString, at location: Int) -> Bool {
+        guard location < string.length else { return false }
+        return (string.attribute(.notasTerminal, at: location, effectiveRange: nil) as? Bool) == true
+    }
+
+    /// One paragraph may contain text and payload characters. Each object becomes its own block
+    /// so neither the text nor the payload is dropped.
+    private static func blocks(in string: NSAttributedString, content: NSRange, paragraphStart: Int, forceTitle: Bool, emitted: Int) -> [Block] {
+        let ns = string.string as NSString
+        let length = ns.length
+        let attrs = paragraphStart < length ? BlockAttributes(string.attributes(at: paragraphStart, effectiveRange: nil)) : BlockAttributes()
+        if content.length == 0 {
+            return [block(attrs: attrs, runs: [], attachment: nil, forceTitle: forceTitle, index: emitted)]
+        }
+        let fragment = ns.substring(with: content)
+        if !fragment.contains("\u{FFFC}"), !fragment.contains(dividerCharacter) {
+            let attachment = string.attribute(.attachment, at: content.location, effectiveRange: nil) as? RichBlockAttachment
+            let textAttrs = attrs.kind == .divider ? BlockAttributes(kind: .body, indent: attrs.indent) : attrs
+            return [block(attrs: textAttrs, runs: runs(in: string, range: content), attachment: attachment, forceTitle: forceTitle, index: emitted)]
+        }
+
+        var pieces: [Block] = []
+        var textStart: Int?
+        func flushText(upTo end: Int) {
+            guard let start = textStart, end > start else { textStart = nil; return }
+            let range = NSRange(location: start, length: end - start)
+            let textAttrs = BlockAttributes(string.attributes(at: start, effectiveRange: nil))
+            let kindAttrs = textAttrs.kind == .divider ? BlockAttributes(kind: .body, indent: textAttrs.indent) : textAttrs
+            pieces.append(block(attrs: kindAttrs, runs: runs(in: string, range: range), attachment: nil, forceTitle: forceTitle, index: emitted + pieces.count))
+            textStart = nil
+        }
+        var index = content.location
+        while index < NSMaxRange(content) {
+            if let attachment = string.attribute(.attachment, at: index, effectiveRange: nil) as? RichBlockAttachment {
+                flushText(upTo: index)
+                pieces.append(attachment.block)
+                index += 1
+            } else if isDividerObject(string, at: index) {
+                flushText(upTo: index)
+                pieces.append(block(attrs: BlockAttributes(kind: .divider), runs: [], attachment: nil, forceTitle: forceTitle, index: emitted + pieces.count))
+                index += 1
+            } else {
+                if textStart == nil { textStart = index }
+                index += 1
+            }
+        }
+        flushText(upTo: NSMaxRange(content))
+        return pieces.isEmpty ? [block(attrs: attrs, runs: [], attachment: nil, forceTitle: forceTitle, index: emitted)] : pieces
+    }
+
+    private static func isDividerObject(_ string: NSAttributedString, at index: Int) -> Bool {
+        guard index < string.length else { return false }
+        let character = (string.string as NSString).character(at: index)
+        guard character != 0x0A, character != 0x0D else { return false }
+        guard BlockAttributes(string.attributes(at: index, effectiveRange: nil)).kind == .divider else { return false }
+        return character == (dividerCharacter.utf16.first ?? 0)
+    }
+
+    private static func block(attrs: BlockAttributes, runs: [InlineRun], attachment: RichBlockAttachment?, forceTitle: Bool, index: Int) -> Block {
+        if let attachment, attrs.kind.isAttachment || attachment.block.kind.isAttachment {
+            return attachment.block
+        }
+        var kind = attrs.kind
+        if forceTitle, !kind.isObject { kind = index == 0 ? .title : (kind == .title ? .body : kind) }
+        let indent = attrs.indent > 0 ? NoteDocument.normalizedIndent(attrs.indent) : nil
+        return Block(kind: kind,
+                     checked: kind == .checklist ? attrs.checked : nil,
+                     indent: indent,
+                     runs: kind == .divider ? [] : runs)
     }
 
     private static func runs(in string: NSAttributedString, range: NSRange) -> [InlineRun] {

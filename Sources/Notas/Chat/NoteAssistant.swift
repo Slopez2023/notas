@@ -19,7 +19,6 @@ struct NoteChatSession: Codable, Identifiable {
     var messages: [NoteChatMessage] = []
     var awaitingReply = false
     var baseRevision: String?
-    var diskRevision: String?
     var modelID: String?
     var selectedModel: ChatModel { modelID.flatMap(ChatModel.init(rawValue:)) ?? .luna }
 }
@@ -37,10 +36,19 @@ final class NoteAssistant {
     @ObservationIgnored private let io = DispatchQueue(label: "notas.assistant.persistence")
     @ObservationIgnored private var apiKey: String?
     @ObservationIgnored var baseURL = ChatClient.defaultBaseURL
+    @ObservationIgnored private let credentials: AssistantCredentialAccess
+    @ObservationIgnored private let urlSession: URLSession?
+    @ObservationIgnored private var historyAccess: HistoryAccess = .writable
+    @ObservationIgnored private var historyDirty = false
     @ObservationIgnored private var snapshots: [UUID: NoteDocument] = [:]
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var draftSaves: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var placeholders: [UUID: UUID] = [:]
+
+    private enum HistoryAccess {
+        case writable
+        case recoveryRequired(String)
+    }
 
     private struct Saved: Codable {
         let version: Int
@@ -48,32 +56,48 @@ final class NoteAssistant {
         let archives: [NoteChatSession]
     }
 
-    init(app: AppState, storageRoot: URL? = nil) {
+    init(app: AppState, storageRoot: URL? = nil, credentials: AssistantCredentialAccess? = nil, urlSession: URLSession? = nil) {
         self.app = app
+        self.credentials = credentials ?? .keychain
+        self.urlSession = urlSession
         let library = app.store.rootURL.resolvingSymlinksInPath().standardizedFileURL.path
         let identity = (try? NoteEdit.revision(NoteDocument(blocks: [Block(kind: .title, runs: [InlineRun(text: library)])]))) ?? UUID().uuidString
         let support = storageRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Notas/Assistant/\(identity)", isDirectory: true)
         stateURL = support.appendingPathComponent("sessions.json")
-        if let data = try? Data(contentsOf: stateURL) {
-            do {
-                let saved = try JSONDecoder().decode(Saved.self, from: data)
-                guard saved.version == 1 else { throw AssistantError.message("Chat history uses an unsupported version.") }
-                sessions = Dictionary(saved.sessions.map { ($0.noteID, $0) }, uniquingKeysWith: { first, _ in first })
-                archives = saved.archives
-                // A reply that was in flight when the app closed is gone; never resend it automatically.
-                for id in sessions.keys where sessions[id]?.awaitingReply == true {
-                    sessions[id]?.awaitingReply = false
-                    sessions[id]?.messages.append(NoteChatMessage(role: .notice, text: "Notas closed before this reply arrived. Send your message again."))
-                }
-            } catch { self.error = "Chat history couldn't be loaded. The saved file has been kept. \(error.localizedDescription)" }
+        loadHistory()
+        if credentials == nil {
+            // `scripts/run.sh` exports a key from the project's .env.local. Adopt it once so later launches use the Keychain.
+            if AssistantKeychain.read() == nil, let fromEnvironment = ProcessInfo.processInfo.environment["OPENCODE_API_KEY"], !fromEnvironment.isEmpty {
+                try? AssistantKeychain.save(fromEnvironment)
+            }
         }
-        // `scripts/run.sh` exports a key from the project's .env.local. Adopt it once so later launches use the Keychain.
-        if AssistantKeychain.read() == nil, let fromEnvironment = ProcessInfo.processInfo.environment["OPENCODE_API_KEY"], !fromEnvironment.isEmpty {
-            try? AssistantKeychain.save(fromEnvironment)
-        }
-        apiKey = AssistantKeychain.read()
+        apiKey = self.credentials.read()
         hasKey = apiKey != nil
+    }
+
+    private func loadHistory() {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: stateURL.path) else {
+            historyAccess = .writable
+            return
+        }
+        do {
+            let data = try Data(contentsOf: stateURL)
+            let saved = try JSONDecoder().decode(Saved.self, from: data)
+            guard saved.version == 1 else { throw AssistantError.message("Chat history uses an unsupported version.") }
+            sessions = Dictionary(saved.sessions.map { ($0.noteID, $0) }, uniquingKeysWith: { first, _ in first })
+            archives = saved.archives
+            // A reply that was in flight when the app closed is gone; never resend it automatically.
+            for id in sessions.keys where sessions[id]?.awaitingReply == true {
+                sessions[id]?.awaitingReply = false
+                sessions[id]?.messages.append(NoteChatMessage(role: .notice, text: "Notas closed before this reply arrived. Send your message again."))
+            }
+            historyAccess = .writable
+        } catch {
+            historyAccess = .recoveryRequired(error.localizedDescription)
+            self.error = "Chat history couldn't be loaded. The saved file has been kept. \(error.localizedDescription)"
+        }
     }
 
     func session(for noteID: UUID) -> NoteChatSession {
@@ -87,6 +111,7 @@ final class NoteAssistant {
     func setDraft(_ text: String, for noteID: UUID) {
         ensureSession(noteID)
         sessions[noteID]?.draft = String(text.prefix(16_000))
+        historyDirty = true
         draftSaves[noteID]?.cancel()
         draftSaves[noteID] = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
@@ -109,13 +134,13 @@ final class NoteAssistant {
         guard !key.isEmpty, key.unicodeScalars.allSatisfy({ $0.isASCII && $0.value > 32 }) else {
             error = "That doesn't look like an API key. Paste the key exactly as OpenCode shows it."; return
         }
-        do { try AssistantKeychain.save(key) } catch { self.error = error.localizedDescription; return }
+        do { try credentials.save(key) } catch { self.error = error.localizedDescription; return }
         apiKey = key; hasKey = true; error = nil
     }
 
     func removeKey() {
         guard busyNotes.isEmpty else { return }
-        AssistantKeychain.delete()
+        credentials.delete()
         apiKey = nil; hasKey = false
     }
 
@@ -127,6 +152,12 @@ final class NoteAssistant {
         }
         let prompt = sessions[noteID]?.draft.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !prompt.isEmpty else { return }
+        if case .recoveryRequired = historyAccess {
+            historyDirty = true
+            persist()
+            error = "Chat history couldn't be saved. The saved file has been kept."
+            return
+        }
         do {
             let document = editor.document
             let context = try NoteEdit.context(document)
@@ -144,7 +175,6 @@ final class NoteAssistant {
             sessions[noteID]?.messages.append(NoteChatMessage(role: .user, text: prompt))
             sessions[noteID]?.draft = ""
             sessions[noteID]?.baseRevision = revision
-            sessions[noteID]?.diskRevision = diskRevision(noteID)
             sessions[noteID]?.awaitingReply = true
             draftSaves.removeValue(forKey: noteID)?.cancel()
             do { try saveNow() } catch {
@@ -157,7 +187,7 @@ final class NoteAssistant {
             busyNotes.insert(noteID)
             let conversation = sessions[noteID]!.id
             let model = sessions[noteID]!.selectedModel
-            let client = ChatClient(apiKey: apiKey, baseURL: baseURL, model: model)
+            let client = ChatClient(apiKey: apiKey, baseURL: baseURL, model: model, session: urlSession)
             let placeholderID = UUID()
             if !model.usesChatCompletions {
                 placeholders[noteID] = placeholderID
@@ -165,24 +195,22 @@ final class NoteAssistant {
             }
             tasks[noteID] = Task { [weak self] in
                 do {
-                    if model.usesChatCompletions {
-                        let text = try await client.complete(instructions: NoteEdit.instructions, turns: turns, schema: AssistantReply.schema)
+                    var completed: CompletedReply?
+                    for try await event in client.reply(to: turns, effort: NoteEdit.effort(for: prompt)) {
                         guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation, self.sessions[noteID]?.awaitingReply == true else { return }
-                        self.finish(noteID, text: text, model: model)
-                    } else {
-                        var completed: ChatStreamUpdate?
-                        for try await update in client.stream(instructions: NoteEdit.instructions, turns: turns, schema: AssistantReply.schema, effort: NoteEdit.effort(for: prompt)) {
-                            guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation, self.sessions[noteID]?.awaitingReply == true else { return }
-                            if update.finished { completed = update; break }
-                            self.present(update, noteID: noteID, messageID: placeholderID)
+                        switch event {
+                        case .preview(let preview):
+                            self.present(preview, noteID: noteID, messageID: placeholderID)
+                        case .completed(let reply):
+                            completed = reply
                         }
-                        guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation, self.sessions[noteID]?.awaitingReply == true else { return }
-                        guard let completed, !completed.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                            self.fail(noteID, "The assistant didn't return a reply.")
-                            return
-                        }
-                        self.finish(noteID, text: completed.output, thought: completed.thought, model: model, messageID: placeholderID)
                     }
+                    guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation, self.sessions[noteID]?.awaitingReply == true else { return }
+                    guard let completed else {
+                        self.fail(noteID, "The assistant didn't return a reply.")
+                        return
+                    }
+                    self.finish(noteID, completed: completed, model: model, messageID: model.usesChatCompletions ? nil : placeholderID)
                 } catch is CancellationError {
                     return
                 } catch {
@@ -233,12 +261,21 @@ final class NoteAssistant {
             guard !editor.hasMarkedText(), try NoteEdit.revision(editor.document) == proposal.revision else {
                 throw AssistantError.message("The note changed since this suggestion. Ask for a fresh edit so your typing stays safe.")
             }
-            if let disk = diskRevision(noteID), disk != proposal.diskRevision, disk != proposal.revision {
-                throw AssistantError.message("The note changed on disk. Reopen Notas to load that version before editing with chat.")
-            }
             let chosen = index.map { [proposal.operations[$0]] } ?? proposal.operations
             let document = try NoteEdit.applying(chosen, to: editor.document)
+            let roundTrip = RichTextCodec.document(from: RichTextCodec.attributedString(from: document))
+            guard roundTrip == document else {
+                throw AssistantError.message("The assistant returned an invalid text edit. Ask it to try again.")
+            }
+            let version = try persistenceGuard(for: noteID)
+            if let stored = proposal.diskRevision, stored != version.token {
+                throw AssistantError.message("The note changed on disk. Reopen Notas to load that version before editing with chat.")
+            }
             editor.applyAssistantDocument(document)
+            guard editor.noteID == noteID, editor.document == document else {
+                editor.undoManager?.undo()
+                throw AssistantError.message("The assistant returned an invalid text edit. Ask it to try again.")
+            }
             app.store.updateDocument(noteID, editor.document)
             if let index, proposal.operations.count > 1 {
                 var rest = proposal.operations
@@ -261,9 +298,14 @@ final class NoteAssistant {
                 proposal.locations = locations.map { values in rebased.map { values.indices.contains($0.offset) ? values[$0.offset] : "" } }
                 proposal.removesFormatting = formatting.map { values in rebased.map { values.indices.contains($0.offset) ? values[$0.offset] : false } }
                 app.store.flush()
-                let revision = try NoteEdit.revision(editor.document)
-                proposal.revision = revision
-                proposal.diskRevision = revision
+                let liveRevision = try NoteEdit.revision(editor.document)
+                let acceptedRevision = try NoteEdit.revision(document)
+                guard editor.noteID == noteID, app.activeNoteID == noteID, app.activeEditor === editor,
+                      liveRevision == acceptedRevision else {
+                    throw AssistantError.message("The note changed since this suggestion. Ask for a fresh edit so your typing stays safe.")
+                }
+                proposal.revision = try NoteEdit.revision(editor.document)
+                proposal.diskRevision = try persistenceGuard(for: noteID).token
                 if proposal.operations.isEmpty { proposal.state = .applied }
             } else {
                 proposal.state = .applied
@@ -298,18 +340,42 @@ final class NoteAssistant {
         persist()
     }
 
-    func shutdown() {
+    /// Writes history, or a separate recovery file when the original cannot be replaced.
+    /// Returns a persistence error the app can use to keep running.
+    @discardableResult
+    func shutdown() -> String? {
         tasks.values.forEach { $0.cancel() }
         draftSaves.values.forEach { $0.cancel() }
-        persist()
+        var reported: String?
+        do { try saveNow() }
+        catch {
+            reported = "Chat history couldn't be saved. \(error.localizedDescription)"
+            self.error = reported
+        }
         io.sync {}
+        return reported
     }
 
-    private func present(_ update: ChatStreamUpdate, noteID: UUID, messageID: UUID) {
+    /// Copies the rejected original aside and starts a new v1 file. Failure leaves the write barrier in place.
+    func recoverHistory() throws {
+        guard case .recoveryRequired(let issue) = historyAccess else { return }
+        let original = try Data(contentsOf: stateURL)
+        let backup = stateURL.deletingLastPathComponent().appendingPathComponent("sessions-backup-\(UUID().uuidString).json")
+        try original.write(to: backup, options: .atomic)
+        historyAccess = .writable
+        historyDirty = true
+        do { try saveNow() }
+        catch {
+            historyAccess = .recoveryRequired(issue)
+            throw error
+        }
+    }
+
+    private func present(_ preview: AssistantPreview, noteID: UUID, messageID: UUID) {
         guard let i = sessions[noteID]?.messages.firstIndex(where: { $0.id == messageID }) else { return }
-        let thought = String(update.thought.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4_000))
+        let thought = String(preview.thought.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4_000))
         sessions[noteID]?.messages[i].thought = thought.isEmpty ? nil : thought
-        sessions[noteID]?.messages[i].text = update.visibleReply
+        sessions[noteID]?.messages[i].text = preview.text
     }
 
     private func dropPlaceholder(_ noteID: UUID) {
@@ -324,15 +390,14 @@ final class NoteAssistant {
         addNotice(message, to: noteID)
     }
 
-    private func finish(_ noteID: UUID, text: String, thought: String? = nil, model: ChatModel, messageID: UUID? = nil) {
+    private func finish(_ noteID: UUID, completed: CompletedReply, model: ChatModel, messageID: UUID? = nil) {
         busyNotes.remove(noteID); tasks[noteID] = nil
         placeholders[noteID] = nil
         defer { snapshots[noteID] = nil; persist() }
         guard sessions[noteID]?.awaitingReply == true else { return }
         sessions[noteID]?.awaitingReply = false
+        let reply = completed.reply
         do {
-            guard text.utf8.count <= 250_000 else { throw AssistantError.message("The reply was too large.") }
-            let reply = try JSONDecoder().decode(AssistantReply.self, from: Data(text.utf8))
             var proposal: AssistantProposal?
             if !reply.operations.isEmpty, let revision = sessions[noteID]?.baseRevision {
                 let live = app?.activeEditor.flatMap { $0.noteID == noteID ? $0.document : nil } ?? app?.store.notes[noteID]?.document
@@ -342,16 +407,16 @@ final class NoteAssistant {
                 _ = try NoteEdit.applying(reply.operations, to: snapshot)
                 let operations = reply.operations.filter { $0.action != .replace || snapshot.blocks[$0.block].plainText != $0.text }
                 if !operations.isEmpty {
+                    let version = try persistenceGuard(for: noteID)
                     proposal = AssistantProposal(id: UUID(), noteID: noteID, revision: revision, operations: operations,
                                                  before: operations.map { snapshot.blocks[$0.block].plainText },
-                                                 diskRevision: sessions[noteID]?.diskRevision,
+                                                 diskRevision: version.token,
                                                  locations: operations.map { NoteEditPreview.location(of: $0, in: snapshot) },
                                                  removesFormatting: operations.map { NoteEditPreview.removesFormatting($0, in: snapshot) })
                 }
             }
-            let cleaned = thought?.trimmingCharacters(in: .whitespacesAndNewlines)
             let message = NoteChatMessage(id: messageID ?? UUID(), role: .assistant, text: reply.reply,
-                                          thought: cleaned?.isEmpty == false ? String(cleaned!.prefix(4_000)) : nil,
+                                          thought: completed.thought,
                                           proposal: proposal, modelID: model.rawValue)
             if let messageID, let index = sessions[noteID]?.messages.firstIndex(where: { $0.id == messageID }) {
                 sessions[noteID]?.messages[index] = message
@@ -364,11 +429,22 @@ final class NoteAssistant {
         }
     }
 
-    private func diskRevision(_ noteID: UUID) -> String? {
-        guard let app else { return nil }
-        let path = app.store.rootURL.appendingPathComponent("Notes/\(noteID.uuidString).notas/note.json")
-        guard let data = try? Data(contentsOf: path), let note = try? LibraryStore.decoder.decode(Note.self, from: data) else { return nil }
-        return try? NoteEdit.revision(note.document)
+    private func persistenceGuard(for noteID: UUID) throws -> DocumentVersion {
+        guard let store = app?.store else {
+            throw AssistantError.message("The note changed on disk. Reopen Notas to load that version before editing with chat.")
+        }
+        do {
+            var version = try store.documentVersion(for: noteID)
+            if version.isUnsaved {
+                store.flush()
+                version = try store.documentVersion(for: noteID)
+            }
+            return version
+        } catch let error as AssistantError {
+            throw error
+        } catch {
+            throw AssistantError.message("The note changed on disk. Reopen Notas to load that version before editing with chat.")
+        }
     }
 
     private func addNotice(_ text: String, to noteID: UUID) {
@@ -381,8 +457,20 @@ final class NoteAssistant {
         try JSONEncoder().encode(Saved(version: 1, sessions: Array(sessions.values), archives: archives))
     }
 
+    private var recoveryURL: URL {
+        stateURL.deletingLastPathComponent().appendingPathComponent("sessions-recovery.json")
+    }
+
     private func saveNow() throws {
-        let data = try encodedState(), url = stateURL
+        let url: URL
+        switch historyAccess {
+        case .writable:
+            url = stateURL
+        case .recoveryRequired:
+            guard historyDirty else { return }
+            url = recoveryURL
+        }
+        let data = try encodedState()
         try io.sync {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             try data.write(to: url, options: .atomic)
@@ -390,6 +478,7 @@ final class NoteAssistant {
     }
 
     private func persist() {
+        historyDirty = true
         do { try saveNow() }
         catch { self.error = "Chat history couldn't be saved. \(error.localizedDescription)" }
     }

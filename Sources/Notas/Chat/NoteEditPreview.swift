@@ -5,11 +5,16 @@ struct EditDifference: Equatable {
     let kind: Kind
     var text: String
 
+    private struct CacheKey: Hashable {
+        let original: String
+        let proposed: String
+    }
+
     private static let cacheLock = NSLock()
-    private static var cache: [String: [EditDifference]] = [:]
+    private static var cache: [CacheKey: [EditDifference]] = [:]
 
     static func between(_ original: String, _ proposed: String) -> [EditDifference] {
-        let key = original + "\u{1}" + proposed
+        let key = CacheKey(original: original, proposed: proposed)
         cacheLock.lock()
         if let hit = cache[key] {
             cacheLock.unlock()

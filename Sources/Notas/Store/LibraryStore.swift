@@ -77,6 +77,41 @@ enum LibraryError: LocalizedError {
     }
 }
 
+/// The document an editor was opened against. An unchanged snapshot does not replace a newer value.
+struct DocumentOrigin {
+    let noteID: UUID
+    fileprivate let basis: NoteDocument
+}
+
+struct EditableDocument {
+    let origin: DocumentOrigin
+    let document: NoteDocument
+}
+
+struct EditorSnapshot {
+    let origin: DocumentOrigin
+    let document: NoteDocument
+}
+
+/// Opaque identity of a note package. Callers compare tokens; they do not interpret them.
+struct DocumentVersion: Equatable, Sendable {
+    let token: String
+    /// True when the note exists only in memory and has no package on disk yet.
+    let isUnsaved: Bool
+}
+
+enum DocumentVersionError: LocalizedError {
+    case missing(UUID)
+    case unreadable(UUID)
+
+    var errorDescription: String? {
+        switch self {
+        case .missing: "The note file is missing."
+        case .unreadable: "The note file couldn't be read."
+        }
+    }
+}
+
 /// Owns every notebook and note, and keeps them in sync with files on disk.
 ///
 /// Layout (inside the library folder, by default `iCloud Drive/Notas`):
@@ -207,6 +242,35 @@ final class LibraryStore {
 
     /// Assets live in the package the note was loaded from, wherever that is.
     func assets(for id: UUID) -> NoteAssets { NoteAssets(package: records[id]?.package ?? packageURL(for: id)) }
+
+    /// The note as the editor should open it, including the basis used for the next snapshot.
+    func editableDocument(for id: UUID) throws -> EditableDocument {
+        guard let note = notes[id] else { throw LibraryError.noteNotFound(id) }
+        return EditableDocument(origin: DocumentOrigin(noteID: id, basis: note.document), document: note.document)
+    }
+
+    /// Read-only guard for the note file. A package that is missing its note or cannot be read throws.
+    /// A note that has never been written returns an unsaved version. This does not resolve conflicts.
+    func documentVersion(for id: UUID) throws -> DocumentVersion {
+        let package = records[id]?.package ?? packageURL(for: id)
+        let file = package.appendingPathComponent("note.json")
+        let fm = FileManager.default
+        if fm.fileExists(atPath: file.path) {
+            do {
+                let data = try Data(contentsOf: file)
+                let token = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                return DocumentVersion(token: token, isUnsaved: false)
+            } catch {
+                throw DocumentVersionError.unreadable(id)
+            }
+        }
+        var directory: ObjCBool = false
+        if fm.fileExists(atPath: package.path, isDirectory: &directory), directory.boolValue {
+            throw DocumentVersionError.missing(id)
+        }
+        guard notes[id] != nil else { throw DocumentVersionError.missing(id) }
+        return DocumentVersion(token: "unsaved:\(id.uuidString)", isUnsaved: true)
+    }
 
     // MARK: Loading
 
@@ -435,6 +499,22 @@ final class LibraryStore {
         note.modified = Date()
         notes[id] = note
         markDirty(id)
+    }
+
+    /// Retains one editor snapshot. An unchanged snapshot leaves a newer stored document in place.
+    /// A successful return is what the editor may treat as handed off. Flush is what writes it.
+    @discardableResult
+    func accept(_ snapshot: EditorSnapshot) throws -> DocumentOrigin {
+        let id = snapshot.origin.noteID
+        guard notes[id] != nil else { throw LibraryError.noteNotFound(id) }
+        if records[id]?.deleting == true {
+            throw LibraryError.blocked("That note is moving to Trash.")
+        }
+        if snapshot.document == snapshot.origin.basis {
+            return snapshot.origin
+        }
+        updateDocument(id, snapshot.document)
+        return DocumentOrigin(noteID: id, basis: snapshot.document)
     }
 
     func mutate(_ id: UUID, touch: Bool = true, _ change: (inout Note) -> Void) {

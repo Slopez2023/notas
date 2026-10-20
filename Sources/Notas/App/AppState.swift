@@ -25,6 +25,7 @@ final class AppState {
     private(set) var activeNoteID: UUID?
     var drawer: DrawerContent?
     var isPaletteOpen = false
+    var notebookEditTarget: NotebookEditTarget?
     enum RightPanel { case closed, style, chat }
     var rightPanel = RightPanel.closed
     var isStylePanelOpen: Bool {
@@ -76,7 +77,18 @@ final class AppState {
     @ObservationIgnored var refreshWidgets: (() -> Void)?
     @ObservationIgnored var retrySharedCaptures: (() -> Void)?
     @ObservationIgnored weak var activeEditor: NotasTextView?
+    /// Chat archive for a deleted note. Nil calls `NoteAssistant`. Tests replace it so deletion
+    /// does not open the keychain.
+    @ObservationIgnored var archiveDeletedNoteChat: ((UUID) -> Void)?
     @ObservationIgnored let noteSharing = NoteSharing()
+    @ObservationIgnored private var editorRegistrations: [UUID: EditorRegistration] = [:]
+    @ObservationIgnored private var editorTokenByNote: [UUID: UUID] = [:]
+
+    private struct EditorRegistration {
+        let token: UUID
+        let noteID: UUID
+        let coordinator: NoteEditorView.Coordinator
+    }
     @ObservationIgnored let defaults: UserDefaults
     @ObservationIgnored private var themeObserver: NSObjectProtocol?
 
@@ -158,22 +170,28 @@ final class AppState {
             tabs.insert(id, at: at)
             activate(id)
         } else if let current = activeNoteID, let i = tabs.firstIndex(of: current) {
-            let previous = tabs[i]
+            guard checkpointEditor(for: current) else { return }
             tabs[i] = id
-            activate(id)
-            store.discardIfEmpty(previous)
+            activeNoteID = id
+            store.discardIfEmpty(current)
+            persistTabs()
+            return
         }
         persistTabs()
     }
 
     func activate(_ id: UUID) {
         guard activeNoteID != id else { return }
+        if let current = activeNoteID {
+            guard checkpointEditor(for: current) else { return }
+        }
         activeNoteID = id
         persistTabs()
     }
 
     func close(_ id: UUID) {
         guard let i = tabs.firstIndex(of: id) else { return }
+        guard checkpointEditor(for: id) else { return }
         tabs.remove(at: i)
         if activeNoteID == id {
             activeNoteID = tabs.isEmpty ? nil : tabs[min(i, tabs.count - 1)]
@@ -233,13 +251,82 @@ final class AppState {
     }
 
     func delete(_ id: UUID) {
-        noteAssistant.deleteNote(id)
+        guard endEditingSession(id) else { return }
+        if let archiveDeletedNoteChat {
+            archiveDeletedNoteChat(id)
+        } else {
+            noteAssistant.deleteNote(id)
+        }
         store.trash(id)
         if let i = tabs.firstIndex(of: id) {
             tabs.remove(at: i)
             if activeNoteID == id { activeNoteID = tabs.isEmpty ? nil : tabs[min(i, tabs.count - 1)] }
             persistTabs()
         }
+    }
+
+    // MARK: Editor handoff
+
+    @discardableResult
+    func registerEditor(_ coordinator: NoteEditorView.Coordinator) -> UUID {
+        let token = UUID()
+        editorRegistrations[token] = EditorRegistration(token: token, noteID: coordinator.noteID, coordinator: coordinator)
+        editorTokenByNote[coordinator.noteID] = token
+        return token
+    }
+
+    func unregisterEditor(noteID: UUID, token: UUID) {
+        guard editorRegistrations[token]?.noteID == noteID else { return }
+        editorRegistrations[token] = nil
+        if editorTokenByNote[noteID] == token {
+            editorTokenByNote[noteID] = nil
+        }
+    }
+
+    func isCurrentEditorRegistration(noteID: UUID, token: UUID) -> Bool {
+        editorTokenByNote[noteID] == token
+    }
+
+    func currentEditorToken(for noteID: UUID) -> UUID? {
+        editorTokenByNote[noteID]
+    }
+
+    /// Transfers the registered editor for `noteID` into the store before tab identity changes.
+    /// A missing editor reference on a dirty registration fails and must not be treated as empty.
+    @discardableResult
+    func checkpointEditor(for noteID: UUID) -> Bool {
+        guard let token = editorTokenByNote[noteID] else { return true }
+        guard let coordinator = editorRegistrations[token]?.coordinator else { return false }
+        return coordinator.checkpoint()
+    }
+
+    /// Every bound editor, by its own note id. Never pairs `activeNoteID` with another editor's text.
+    @discardableResult
+    func checkpointBoundEditors() -> Bool {
+        var succeeded = true
+        for noteID in editorTokenByNote.keys where !checkpointEditor(for: noteID) {
+            succeeded = false
+        }
+        return succeeded
+    }
+
+    func checkpointForResignation() {
+        _ = checkpointBoundEditors()
+    }
+
+    @discardableResult
+    func checkpointForQuit() -> Bool {
+        checkpointBoundEditors()
+    }
+
+    /// Checkpoints the bound editor and invalidates it so a late callback cannot write the note again.
+    @discardableResult
+    func endEditingSession(_ id: UUID) -> Bool {
+        guard checkpointEditor(for: id) else { return false }
+        if let token = editorTokenByNote[id] {
+            editorRegistrations[token]?.coordinator.invalidate()
+        }
+        return true
     }
 
     func toggleDrawer(_ content: DrawerContent) {

@@ -21,6 +21,32 @@ enum Entry {
             RunLoop.main.run()
             return
         }
+        if CommandLine.arguments.contains("--editor-stability") {
+            Task { @MainActor in exit(await EditorStabilityTests.run() ? 0 : 1) }
+            RunLoop.main.run()
+            return
+        }
+        if CommandLine.arguments.contains("--chat-stability") {
+            Task { @MainActor in exit(await ChatStabilityTests.run() ? 0 : 1) }
+            RunLoop.main.run()
+            return
+        }
+        if CommandLine.arguments.contains("--ui-stability") {
+            Task { @MainActor in exit(await UIStabilityTests.run() ? 0 : 1) }
+            RunLoop.main.run()
+            return
+        }
+        if CommandLine.arguments.contains("--stability-test") {
+            Task { @MainActor in
+                let storage = await StorageStabilityTests.run()
+                let editor = await EditorStabilityTests.run()
+                let chat = await ChatStabilityTests.run()
+                let ui = await UIStabilityTests.run()
+                exit(storage && editor && chat && ui ? 0 : 1)
+            }
+            RunLoop.main.run()
+            return
+        }
         if CommandLine.arguments.contains("--self-test") {
             exit(SelfTest.run() ? 0 : 1)
         }
@@ -109,12 +135,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard app.checkpointForQuit() else {
+            reportPersistenceFailure("A note is still open and its latest text could not be saved.")
+            return .terminateCancel
+        }
+        let app = self.app
+        Task { @MainActor in
+            do {
+                try await app.store.flush()
+                if let history = app.noteAssistant.shutdown() {
+                    self.reportPersistenceFailure(history)
+                    NSApp.reply(toApplicationShouldTerminate: false)
+                } else {
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                }
+            } catch {
+                self.reportPersistenceFailure(error.localizedDescription)
+                NSApp.reply(toApplicationShouldTerminate: false)
+            }
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        app.noteAssistant.shutdown()
-        app.activeEditor.map { app.store.updateDocument(app.activeNoteID ?? UUID(), $0.document) }
+        _ = app.checkpointForQuit()
+        _ = app.noteAssistant.shutdown()
         quickCapture?.model.saveDraft()
         integration?.publishNow()
-        store.flush()
+        let _: Bool = store.flush()
+    }
+
+    private func reportPersistenceFailure(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Notas could not save everything"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -176,7 +233,7 @@ struct NotasCommands: Commands {
             Divider()
             Button("New Note") { app.newNote() }.keyboardShortcut("n")
             Button("New Note in Tab") { app.newNote() }.keyboardShortcut("t")
-            Button("New Notebook…") { app.toggleDrawer(.all) }.keyboardShortcut("n", modifiers: [.command, .shift])
+            Button("New Notebook…") { app.showMainWindow?(); app.notebookEditTarget = .new }.keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()
             Button("Close Tab") { _ = app.closeActiveTab() }
         }

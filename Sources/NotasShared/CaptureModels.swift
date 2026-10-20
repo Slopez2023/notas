@@ -30,17 +30,25 @@ public struct CaptureRequest: Codable, Equatable, Sendable, Identifiable {
     }
 
     public var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && links.isEmpty && attachments.isEmpty }
+    /// Title and body both start at the first line with visible text, so blank lines before it
+    /// can neither become an empty title nor swallow that line.
+    private var logicalLines: [Substring] { text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) }
+    private static func isBlank(_ line: Substring) -> Bool { line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var firstLineIndex: Int? { logicalLines.firstIndex { !Self.isBlank($0) } }
+
     public var title: String {
-        text.split(whereSeparator: \.isNewline).first.map(String.init)
-            .map { String($0.trimmingCharacters(in: .whitespaces).prefix(160)) }
+        firstLineIndex.map { String(logicalLines[$0].trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)) }
             ?? links.first?.host ?? (attachments.isEmpty ? "Quick note" : "Shared photos")
     }
     public var body: String {
-        let lines = text.components(separatedBy: .newlines)
-        guard let first = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { return "" }
+        let lines = logicalLines
+        guard let first = firstLineIndex else { return "" }
         // Keep the full first line in the body when it was shortened for the title.
-        if lines[first].trimmingCharacters(in: .whitespaces).count > 160 { return text }
-        return lines.dropFirst(first + 1).joined(separator: "\n").trimmingCharacters(in: .newlines)
+        let shortened = lines[first].trimmingCharacters(in: .whitespacesAndNewlines).count > 160
+        var rest = lines[(shortened ? first : first + 1)...]
+        while let head = rest.first, Self.isBlank(head), !shortened { rest = rest.dropFirst() }
+        while let tail = rest.last, Self.isBlank(tail) { rest = rest.dropLast() }
+        return rest.joined(separator: "\n")
     }
 }
 

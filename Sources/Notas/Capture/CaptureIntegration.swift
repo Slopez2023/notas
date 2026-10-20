@@ -6,12 +6,13 @@ import NotasShared
 
 extension LibraryStore {
     /// A capture ID is also its note ID, so retrying after a crash cannot duplicate it.
+    /// Everything is assembled in one hidden folder and published with a single move, so a failure
+    /// leaves no half-written package, and the caller's inbox or draft is only cleared after success.
     @discardableResult
     func importCapture(_ request: CaptureRequest, package: URL? = nil, style: NoteStyle = NoteStyle()) throws -> Note {
-        if let note = notes[request.id] { return note }
+        if let note = try publishedCapture(request.id) { return note }
         guard !request.isEmpty else { throw CaptureError.emptyCapture }
-        let notebookID = request.notebookID.flatMap { notebook($0)?.id } ?? sortedNotebooks.first?.id
-        guard let notebookID else { throw CaptureError.emptyCapture }
+        let notebookID = try captureNotebookID(requested: request.notebookID)
         var blocks = [Block(kind: .title, runs: [InlineRun(text: request.title)])]
         if !request.body.isEmpty {
             blocks += request.body.components(separatedBy: "\n").map { Block(kind: .body, runs: [InlineRun(text: $0)]) }
@@ -20,18 +21,23 @@ extension LibraryStore {
             guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw CaptureError.invalidAttachment }
             blocks.append(Block(kind: .body, runs: [InlineRun(text: url.absoluteString, link: url.absoluteString)]))
         }
-        if !request.attachments.isEmpty {
-            guard let package else { throw CaptureError.invalidAttachment }
-            let images = try request.attachments.flatMap { attachment in
-                let url = try SharedCaptureStore.attachmentURL(name: attachment.name, in: package)
-                return try assets(for: request.id).importFile(url)
+        if !request.attachments.isEmpty, package == nil { throw CaptureError.invalidAttachment }
+        let staging = try beginCaptureStaging(for: request.id)
+        do {
+            if let package, !request.attachments.isEmpty {
+                let assets = NoteAssets(package: staging)
+                let images = try request.attachments.flatMap { attachment in
+                    try assets.importFile(try SharedCaptureStore.attachmentURL(name: attachment.name, in: package))
+                }
+                blocks.append(Block(kind: .gallery, runs: [], payload: BlockPayload(images: images)))
             }
-            blocks.append(Block(kind: .gallery, runs: [], payload: BlockPayload(images: images)))
+            let note = Note(id: request.id, notebookID: notebookID, tags: [], created: request.created,
+                            modified: request.created, pinned: false, style: style, document: NoteDocument(blocks: blocks))
+            return try publishCapture(note, staging: staging)
+        } catch {
+            discardCaptureStaging(staging)
+            throw error
         }
-        let note = Note(id: request.id, notebookID: notebookID, tags: [], created: request.created,
-                        modified: request.created, pinned: false, style: style, document: NoteDocument(blocks: blocks))
-        try persistCapture(note)
-        return note
     }
 }
 

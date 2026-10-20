@@ -35,6 +35,22 @@ final class AppState {
         get { rightPanel == .chat }
         set { if newValue { rightPanel = .chat } else if rightPanel == .chat { rightPanel = .closed } }
     }
+    /// Width of the chat panel. The user drags its edge to resize it.
+    var chatWidth: CGFloat = 350 {
+        didSet {
+            let clamped = min(max(chatWidth, Self.minChatWidth), Self.maxChatWidth)
+            if clamped != chatWidth { chatWidth = clamped; return }
+            defaults.set(Double(chatWidth), forKey: "chatWidth")
+        }
+    }
+    static let minChatWidth: CGFloat = 300
+    static let maxChatWidth: CGFloat = 560
+    /// Room the note keeps when the chat takes a column of the window.
+    static let minEditorWidth: CGFloat = 340
+    /// Width of the main window, kept in sync by the layout.
+    var windowWidth: CGFloat = 1180
+    /// True when the chat floats over the note instead of taking a column.
+    var isChatFloating: Bool { isChatOpen && windowWidth < chatWidth + Self.minEditorWidth }
     @ObservationIgnored lazy var noteAssistant = NoteAssistant(app: self)
     var captureImportError: String?
 
@@ -67,6 +83,9 @@ final class AppState {
     init(store: LibraryStore, preferences: UserDefaults? = nil) {
         self.store = store
         defaults = preferences ?? ProcessInfo.processInfo.environment["NOTAS_DEFAULTS_SUITE"].flatMap(UserDefaults.init(suiteName:)) ?? .standard
+        if let stored = defaults.object(forKey: "chatWidth") as? Double, stored > 0 {
+            chatWidth = CGFloat(stored)
+        }
         widgetNoteID = defaults.string(forKey: "widgetNoteID").flatMap(UUID.init(uuidString:))
         appearance = AppearanceSetting(rawValue: defaults.string(forKey: "appearance") ?? "") ?? .system
         appAccent = AccentColor(rawValue: defaults.string(forKey: "accent") ?? "") ?? .violet

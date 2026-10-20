@@ -1,29 +1,17 @@
+import AppKit
 import SwiftUI
 
 struct MainView: View {
     @Environment(AppState.self) private var app
     @Environment(\.openWindow) private var openWindow
+    @State private var resizeStart: CGFloat?
 
     var body: some View {
         let style = app.chromeStyle
-        HStack(spacing: 0) {
-            workspace(style)
-            if app.isChatOpen {
-                Rectangle().fill(style.secondary.opacity(0.18)).frame(width: 1)
-                Group {
-                    if let id = app.activeNoteID {
-                        NoteChatSidebar(noteID: id).id(id)
-                    } else {
-                        Text("Open a note to start a conversation.")
-                            .foregroundStyle(style.secondary).padding(24)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    }
-                }
-                .frame(width: 350)
-                .padding(.top, 38)
-                .background(style.background)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
+        GeometryReader { proxy in
+            layout(style, width: proxy.size.width)
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+                .onChange(of: proxy.size.width) { _, width in app.windowWidth = width }
         }
         .ignoresSafeArea()
         .animation(.snappy(duration: 0.25), value: app.isChatOpen)
@@ -45,7 +33,87 @@ struct MainView: View {
         .onChange(of: app.isStylePanelOpen) { _, open in if !open { app.focusEditorSoon() } }
     }
 
-    private func workspace(_ style: ResolvedStyle) -> some View {
+    /// The note keeps the whole window until the chat needs a column of it. When the
+    /// window is too narrow for both, the chat floats over the note instead of
+    /// squeezing it off the edge of the screen.
+    private func layout(_ style: ResolvedStyle, width: CGFloat) -> some View {
+        let docked = app.isChatOpen && width >= app.chatWidth + AppState.minEditorWidth
+        let inset = docked ? app.chatWidth : 0
+        return workspace(style, trailingInset: inset)
+            .frame(width: width, alignment: .topLeading)
+            .overlay(alignment: .topTrailing) {
+                if app.isChatOpen {
+                    if docked {
+                        chatPanel(style, width: app.chatWidth, resizable: true)
+                            .transition(.move(edge: .trailing))
+                    } else {
+                        floatingChat(style, width: min(app.chatWidth, max(AppState.minChatWidth, width - 32)))
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+            }
+    }
+
+    private func floatingChat(_ style: ResolvedStyle, width: CGFloat) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.opacity(0.12)
+                .onTapGesture { closeChat() }
+            chatPanel(style, width: width, resizable: false)
+        }
+    }
+
+    private func closeChat() {
+        withAnimation(.snappy(duration: 0.25)) { app.isChatOpen = false }
+    }
+
+    private func chatPanel(_ style: ResolvedStyle, width: CGFloat, resizable: Bool) -> some View {
+        Group {
+            if let id = app.activeNoteID {
+                NoteChatSidebar(noteID: id).id(id)
+            } else {
+                Text("Open a note to start a conversation.")
+                    .foregroundStyle(style.secondary).padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+        }
+        .padding(.top, 38)
+        .frame(width: width, alignment: .top)
+        // Fill the window height. The transcript's ideal height is every message,
+        // and the window stack will not finish measuring that.
+        .frame(maxHeight: .infinity)
+        .background(style.background)
+        .overlay(alignment: .leading) {
+            if resizable { resizeHandle(style) }
+        }
+        .onExitCommand { closeChat() }
+    }
+
+    /// Drag the panel's edge to give the chat more or less room.
+    private func resizeHandle(_ style: ResolvedStyle) -> some View {
+        Rectangle()
+            .fill(style.secondary.opacity(0.18))
+            .frame(width: 1)
+            .overlay(alignment: .leading) {
+                Color.clear
+                    .frame(width: 9)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { value in
+                                let start = resizeStart ?? app.chatWidth
+                                if resizeStart == nil { resizeStart = app.chatWidth }
+                                app.chatWidth = start - value.translation.width
+                            }
+                            .onEnded { _ in resizeStart = nil }
+                    )
+            }
+            .onDisappear { NSCursor.pop() }
+    }
+
+    private func workspace(_ style: ResolvedStyle, trailingInset: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             style.background
 
@@ -53,11 +121,13 @@ struct MainView: View {
                 NoteEditorView(noteID: id, style: app.resolvedStyle(for: note))
                     .id(id)
                     .transition(.opacity)
+                    .padding(.trailing, trailingInset)
             } else {
                 EmptyStateView()
             }
 
             TopBar()
+                .padding(.trailing, trailingInset)
 
             NotebookRail()
                 .padding(.leading, 12)

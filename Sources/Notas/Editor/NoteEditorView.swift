@@ -101,10 +101,11 @@ struct NoteEditorView: NSViewRepresentable {
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             // Escape closes whatever overlay is open instead of triggering completion.
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-                if app.drawer != nil || app.isStylePanelOpen {
+                if app.drawer != nil || app.isStylePanelOpen || app.isChatFloating {
                     withAnimation(.snappy(duration: 0.25)) {
                         app.drawer = nil
                         app.isStylePanelOpen = false
+                        app.isChatOpen = false
                     }
                     return true
                 }

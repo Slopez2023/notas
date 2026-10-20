@@ -5,7 +5,26 @@ struct EditDifference: Equatable {
     let kind: Kind
     var text: String
 
+    private static let cacheLock = NSLock()
+    private static var cache: [String: [EditDifference]] = [:]
+
     static func between(_ original: String, _ proposed: String) -> [EditDifference] {
+        let key = original + "\u{1}" + proposed
+        cacheLock.lock()
+        if let hit = cache[key] {
+            cacheLock.unlock()
+            return hit
+        }
+        cacheLock.unlock()
+        let value = compared(original, proposed)
+        cacheLock.lock()
+        if cache.count >= 80 { cache.removeAll(keepingCapacity: true) }
+        cache[key] = value
+        cacheLock.unlock()
+        return value
+    }
+
+    private static func compared(_ original: String, _ proposed: String) -> [EditDifference] {
         guard original != proposed else { return original.isEmpty ? [] : [EditDifference(kind: .unchanged, text: original)] }
         let old = tokens(original), new = tokens(proposed)
         // Bound the work for long paragraphs or complete rewrites.

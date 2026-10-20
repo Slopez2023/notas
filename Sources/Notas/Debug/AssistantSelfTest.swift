@@ -92,6 +92,33 @@ enum AssistantSelfTest {
                 do { _ = try NoteEdit.applying([invalid], to: doc) } catch { rejected = true }
                 try check(rejected, "unsafe operation rejected: \(invalid.action) block \(invalid.block)")
             }
+            try check(NoteEdit.effort(for: "Improve this") == "low" && NoteEdit.effort(for: "Rewrite the whole note") == "medium",
+                      "small edits use brief reasoning and a restructure uses medium")
+            try check(ChatClient.visibleReply(in: "{\"reply\":\"Hello\"}") == "Hello"
+                      && ChatClient.visibleReply(in: "{\"reply\":\"Hello") == "Hello"
+                      && ChatClient.visibleReply(in: "{\"reply\":\"Say \\\"hi\\\"\"}") == "Say \"hi\""
+                      && ChatClient.visibleReply(in: "{\"operations\":[") == "",
+                      "a streaming reply shows the answer text without raw JSON")
+            let base = NoteDocument(blocks: ["T", "A", "B", "C"].enumerated().map { index, text in
+                Block(kind: index == 0 ? .title : .body, runs: [InlineRun(text: text)])
+            })
+            let insertX = AssistantOperation(action: .insertAfter, block: 1, text: "X", kind: "body")
+            let insertY = AssistantOperation(action: .insertAfter, block: 1, text: "Y", kind: "body")
+            let afterX = try NoteEdit.applying([insertX], to: base)
+            let rebasedY = NoteEdit.rebase([insertY], after: [insertX])
+            try check(rebasedY.first?.operation.block == 2, "an accepted insertion moves the next insertion after it")
+            let withY = try NoteEdit.applying(rebasedY.map(\.operation), to: afterX)
+            try check(withY.blocks.map(\.plainText) == ["T", "A", "X", "Y", "B", "C"], "rebased insertions keep acceptance order")
+            let replaceA = AssistantOperation(action: .replace, block: 1, text: "A2", kind: "body")
+            let replaceB = AssistantOperation(action: .replace, block: 2, text: "B2", kind: "body")
+            try check(NoteEdit.rebase([replaceB], after: [replaceA]).first?.operation.block == 2, "a replacement does not shift later blocks")
+            let deleteA = AssistantOperation(action: .delete, block: 1, text: "", kind: "body")
+            let shifted = NoteEdit.rebase([replaceB], after: [deleteA])
+            try check(shifted.first?.operation.block == 1, "deleting an earlier block shifts the next edit")
+            let afterDelete = try NoteEdit.applying([deleteA], to: base)
+            let deletedApplied = try NoteEdit.applying(shifted.map(\.operation), to: afterDelete)
+            try check(deletedApplied.blocks.map(\.plainText) == ["T", "B2", "C"], "a shifted replacement edits the same paragraph")
+            try check(NoteEdit.rebase([replaceA], after: [deleteA]).isEmpty, "an edit to a deleted block is dropped")
 
             let library = LibraryStore(rootURL: root.appendingPathComponent("Library"))
             library.load()
@@ -141,13 +168,16 @@ enum AssistantSelfTest {
             try await waitUntil { !assistant.busyNotes.contains(note.id) }
             let reply = assistant.session(for: note.id).messages.last
             try check(reply?.text == "Here is a clearer version.", "reply is read from the Responses payload")
+            try check(reply?.thought == "Checking the requested edit.", "a reasoning summary is kept with the reply")
             let seen = ((try? String(contentsOf: requests, encoding: .utf8)) ?? "").split(separator: "\n").compactMap {
                 (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
             }
             try check(seen.first?["authorization"] as? String == "Bearer test-opencode-key" && (seen.first?["session"] as? String)?.isEmpty == false,
                       "request carries the bearer key and OpenCode session header")
-            try check(seen.first?["model"] as? String == "gpt-6-luna" && seen.first?["effort"] as? String == "medium" && seen.first?["strict"] as? Bool == true
-                      && (seen.first?["path"] as? String)?.hasSuffix("/responses") == true, "Luna at medium with a strict JSON schema is requested")
+            try check(seen.first?["model"] as? String == "gpt-6-luna" && seen.first?["effort"] as? String == "low"
+                      && seen.first?["summary"] as? String == "auto" && seen.first?["stream"] as? Bool == true
+                      && seen.first?["strict"] as? Bool == true && (seen.first?["path"] as? String)?.hasSuffix("/responses") == true,
+                      "Luna streams a brief reply with a reasoning summary and a strict JSON schema")
             guard let proposal = reply?.proposal else { throw AssistantError.message("Missing proposal") }
             try check(proposal.locations == ["Paragraph 1"], "proposal persists a human-readable location from the snapshot")
             try check(proposal.removesFormatting == [true], "review records formatting loss on the affected replacement")
@@ -180,8 +210,10 @@ enum AssistantSelfTest {
             try check(assistant.error?.contains("note changed") == true && editor.document.title == "!Test", "typing before Apply rejects stale proposal")
             assistant.error = nil
             editor.load(doc)
-            assistant.apply(proposal.id, noteID: note.id)
-            try check(editor.document.blocks[1].plainText == "Improved", "validated proposal applies through the editor")
+            assistant.apply(proposal.id, noteID: note.id, only: 0)
+            try check(editor.document.blocks[1].plainText == "Improved"
+                      && assistant.session(for: note.id).messages.contains { $0.proposal?.id == proposal.id && $0.proposal?.state == .applied },
+                      "accepting the only change applies it")
             undo?.undo()
             try check(editor.document == doc, "coordinator Apply remains one undoable operation")
 
@@ -309,7 +341,7 @@ enum AssistantSelfTest {
            locations: ["The plan · paragraph 1", "After Packing · heading"], removesFormatting: [false, false])
         for theme in ["paper", "midnight"] {
             let style = ResolvedStyle(style: NoteStyle(themeID: theme), systemIsDark: theme == "midnight", appAccent: .violet)
-            let content = NoteProposalCard(proposal: proposal, style: style, readOnly: false, busy: false, accept: {}, keepOriginal: {})
+            let content = NoteProposalCard(proposal: proposal, style: style, readOnly: false, busy: false, accept: {}, acceptOne: { _ in }, skip: { _ in }, keepOriginal: {})
                 .foregroundStyle(style.text).padding(16)
                 .frame(width: 356, height: 660, alignment: .topLeading)
                 .background(style.background).environment(\.colorScheme, style.colorScheme)

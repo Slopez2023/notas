@@ -6,8 +6,11 @@ struct NoteProposalCard: View {
     let readOnly: Bool
     let busy: Bool
     let accept: () -> Void
+    let acceptOne: (Int) -> Void
+    let skip: (Int) -> Void
     let keepOriginal: () -> Void
     @State private var mode = PreviewMode.changes
+    @State private var expanded = 0
 
     private enum PreviewMode: String, CaseIterable {
         case changes = "Changes", proposed = "Proposed", original = "Original"
@@ -28,33 +31,56 @@ struct NoteProposalCard: View {
                         .font(.system(size: 10)).foregroundStyle(style.secondary)
                 }
             }
-            Picker("Preview", selection: $mode) {
-                ForEach(PreviewMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }.pickerStyle(.segmented).controlSize(.small).labelsHidden()
-                .accessibilityLabel("Edit preview")
-            if mode == .changes {
-                HStack(spacing: 12) {
-                    Text("Removed").strikethrough().foregroundStyle(removedColor)
-                    Text("Added").underline().foregroundStyle(addedColor)
-                }.font(.system(size: 10))
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Removed text is struck through. Added text is underlined.")
-            }
-            ForEach(Array(proposal.operations.enumerated()), id: \.offset) { index, operation in
-                if index > 0 { Divider().opacity(0.4) }
-                preview(operation, index: index)
+            if !proposal.operations.isEmpty {
+                Picker("Preview", selection: $mode) {
+                    ForEach(PreviewMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented).controlSize(.small).labelsHidden()
+                    .accessibilityLabel("Edit preview")
+                if mode == .changes {
+                    HStack(spacing: 12) {
+                        Text("Removed").strikethrough().foregroundStyle(removedColor)
+                        Text("Added").underline().foregroundStyle(addedColor)
+                    }.font(.system(size: 10))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Removed text is struck through. Added text is underlined.")
+                }
+                if reviewsOneAtATime {
+                    ForEach(Array(proposal.operations.enumerated()), id: \.offset) { index, operation in
+                        if index == focused {
+                            preview(operation, index: index)
+                            HStack(spacing: 12) {
+                                Button("Accept this change") { acceptOne(index) }
+                                    .buttonStyle(.borderedProminent).disabled(busy)
+                                Button("Skip") { skip(index) }
+                                    .buttonStyle(.borderless).disabled(busy)
+                            }.controlSize(.small)
+                        } else {
+                            collapsedRow(operation, index: index)
+                        }
+                    }
+                } else {
+                    ForEach(Array(proposal.operations.enumerated()), id: \.offset) { index, operation in
+                        if index > 0 { Divider().opacity(0.4) }
+                        preview(operation, index: index)
+                    }
+                }
             }
             if proposal.state == .pending && !readOnly {
                 HStack(spacing: 12) {
-                    Button(proposal.operations.count == 1 ? "Accept change" : "Accept \(proposal.operations.count) changes", action: accept)
-                        .buttonStyle(.borderedProminent).disabled(busy)
+                    if proposal.operations.count > 1 {
+                        Button("Accept all \(proposal.operations.count) changes", action: accept)
+                            .buttonStyle(.bordered).disabled(busy)
+                    } else {
+                        Button("Accept change", action: accept)
+                            .buttonStyle(.borderedProminent).disabled(busy)
+                    }
                     Button("Keep original", action: keepOriginal)
                         .buttonStyle(.borderless).disabled(busy)
                 }.controlSize(.small)
                 Text("Your note stays as it is until you accept.")
                     .font(.system(size: 10)).foregroundStyle(style.secondary)
             } else if proposal.state == .applied {
-                Text("Accepted in one step. Press ⌘Z in the note to undo.")
+                Text("Accepted. Press ⌘Z in the note to undo the last change.")
                     .font(.system(size: 10)).foregroundStyle(style.secondary)
             }
             if proposal.removesFormatting == nil, proposal.operations.contains(where: { $0.action == .replace }), proposal.state == .pending {
@@ -66,6 +92,35 @@ struct NoteProposalCard: View {
         .background(style.surface.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(style.accentColor.opacity(0.25), lineWidth: 0.7))
         .tint(style.accentColor)
+        .onChange(of: proposal.operations.count) {
+            if expanded >= proposal.operations.count { expanded = max(proposal.operations.count - 1, 0) }
+        }
+    }
+
+    private var reviewsOneAtATime: Bool {
+        proposal.state == .pending && !readOnly && proposal.operations.count > 1
+    }
+
+    private var focused: Int { min(expanded, max(proposal.operations.count - 1, 0)) }
+
+    private func collapsedRow(_ operation: AssistantOperation, index: Int) -> some View {
+        let original = proposal.before.indices.contains(index) ? proposal.before[index] : ""
+        let location = proposal.locations.flatMap { $0.indices.contains(index) ? $0[index] : nil }
+            ?? NoteEditPreview.fallbackLocation(of: operation, original: original)
+        let name = NoteEditPreview.name(of: BlockKind(rawValue: operation.kind) ?? .body)
+        let title = "\(operation.action == .insertAfter ? "Add" : operation.action == .delete ? "Remove" : "Edit") \(name)"
+        return Button { expanded = index } label: {
+            HStack(spacing: 8) {
+                Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(style.text)
+                Spacer(minLength: 8)
+                Text(location).font(.system(size: 11)).foregroundStyle(style.secondary).lineLimit(1)
+            }
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(location)")
     }
 
     private func preview(_ operation: AssistantOperation, index: Int) -> some View {
@@ -106,7 +161,8 @@ struct NoteProposalCard: View {
             }
         }
         .font(.system(size: 12.5)).lineSpacing(4)
-        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
     }
 
     private func markedDifference(_ difference: [EditDifference], showingOriginal: Bool) -> AttributedString {

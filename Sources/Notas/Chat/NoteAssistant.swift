@@ -5,6 +5,7 @@ struct NoteChatMessage: Codable, Identifiable {
     var id = UUID()
     let role: Role
     var text: String
+    var thought: String?
     var proposal: AssistantProposal?
     var modelID: String?
     var modelLabel: String { modelID.map { ChatModel(rawValue: $0)?.label ?? $0 } ?? ChatModel.luna.label }
@@ -38,6 +39,8 @@ final class NoteAssistant {
     @ObservationIgnored var baseURL = ChatClient.defaultBaseURL
     @ObservationIgnored private var snapshots: [UUID: NoteDocument] = [:]
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var draftSaves: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var placeholders: [UUID: UUID] = [:]
 
     private struct Saved: Codable {
         let version: Int
@@ -84,13 +87,20 @@ final class NoteAssistant {
     func setDraft(_ text: String, for noteID: UUID) {
         ensureSession(noteID)
         sessions[noteID]?.draft = String(text.prefix(16_000))
-        persist()
+        draftSaves[noteID]?.cancel()
+        draftSaves[noteID] = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self, !Task.isCancelled else { return }
+            self.draftSaves[noteID] = nil
+            self.persist()
+        }
     }
 
     func setModel(_ model: ChatModel, for noteID: UUID) {
         guard !busyNotes.contains(noteID) else { return }
         ensureSession(noteID)
         sessions[noteID]?.modelID = model.rawValue
+        draftSaves.removeValue(forKey: noteID)?.cancel()
         persist()
     }
 
@@ -136,20 +146,47 @@ final class NoteAssistant {
             sessions[noteID]?.baseRevision = revision
             sessions[noteID]?.diskRevision = diskRevision(noteID)
             sessions[noteID]?.awaitingReply = true
-            try saveNow()
+            draftSaves.removeValue(forKey: noteID)?.cancel()
+            do { try saveNow() } catch {
+                sessions[noteID]?.awaitingReply = false
+                if sessions[noteID]?.messages.last?.role == .user { sessions[noteID]?.messages.removeLast() }
+                sessions[noteID]?.draft = prompt
+                self.error = "Chat history couldn't be saved. \(error.localizedDescription)"
+                return
+            }
             busyNotes.insert(noteID)
             let conversation = sessions[noteID]!.id
             let model = sessions[noteID]!.selectedModel
             let client = ChatClient(apiKey: apiKey, baseURL: baseURL, model: model)
+            let placeholderID = UUID()
+            if !model.usesChatCompletions {
+                placeholders[noteID] = placeholderID
+                sessions[noteID]?.messages.append(NoteChatMessage(id: placeholderID, role: .assistant, text: "", modelID: model.rawValue))
+            }
             tasks[noteID] = Task { [weak self] in
                 do {
-                    let text = try await client.complete(instructions: NoteEdit.instructions, turns: turns, schema: AssistantReply.schema)
-                    guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation else { return }
-                    self.finish(noteID, text: text, model: model)
+                    if model.usesChatCompletions {
+                        let text = try await client.complete(instructions: NoteEdit.instructions, turns: turns, schema: AssistantReply.schema)
+                        guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation, self.sessions[noteID]?.awaitingReply == true else { return }
+                        self.finish(noteID, text: text, model: model)
+                    } else {
+                        var completed: ChatStreamUpdate?
+                        for try await update in client.stream(instructions: NoteEdit.instructions, turns: turns, schema: AssistantReply.schema, effort: NoteEdit.effort(for: prompt)) {
+                            guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation, self.sessions[noteID]?.awaitingReply == true else { return }
+                            if update.finished { completed = update; break }
+                            self.present(update, noteID: noteID, messageID: placeholderID)
+                        }
+                        guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation, self.sessions[noteID]?.awaitingReply == true else { return }
+                        guard let completed, !completed.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            self.fail(noteID, "The assistant didn't return a reply.")
+                            return
+                        }
+                        self.finish(noteID, text: completed.output, thought: completed.thought, model: model, messageID: placeholderID)
+                    }
                 } catch is CancellationError {
                     return
                 } catch {
-                    guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation else { return }
+                    guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation, self.sessions[noteID]?.awaitingReply == true else { return }
                     self.fail(noteID, error.localizedDescription)
                 }
             }
@@ -162,11 +199,13 @@ final class NoteAssistant {
         busyNotes.remove(noteID)
         snapshots[noteID] = nil
         sessions[noteID]?.awaitingReply = false
+        dropPlaceholder(noteID)
         addNotice("Stopped. No changes were applied.", to: noteID)
     }
 
     func newConversation(_ noteID: UUID) {
         guard !busyNotes.contains(noteID) else { return }
+        draftSaves.removeValue(forKey: noteID)?.cancel()
         let modelID = sessions[noteID]?.modelID
         if let old = sessions[noteID], !old.messages.isEmpty { archives.append(old) }
         sessions[noteID] = NoteChatSession(noteID: noteID)
@@ -180,12 +219,15 @@ final class NoteAssistant {
         persist()
     }
 
-    func apply(_ proposalID: UUID, noteID: UUID) {
+    func apply(_ proposalID: UUID, noteID: UUID, only index: Int? = nil) {
         guard let app, let i = sessions[noteID]?.messages.firstIndex(where: { $0.proposal?.id == proposalID }),
-              let proposal = sessions[noteID]?.messages[i].proposal, proposal.state == .pending,
+              var proposal = sessions[noteID]?.messages[i].proposal, proposal.state == .pending,
               proposal.noteID == noteID, app.store.notes[noteID] != nil,
               let editor = app.activeEditor, editor.noteID == noteID, app.activeNoteID == noteID else {
             error = "Reopen the original note to apply this change."; return
+        }
+        if let index, !proposal.operations.indices.contains(index) {
+            error = "That change is no longer in this suggestion."; return
         }
         do {
             guard !editor.hasMarkedText(), try NoteEdit.revision(editor.document) == proposal.revision else {
@@ -194,12 +236,60 @@ final class NoteAssistant {
             if let disk = diskRevision(noteID), disk != proposal.diskRevision, disk != proposal.revision {
                 throw AssistantError.message("The note changed on disk. Reopen Notas to load that version before editing with chat.")
             }
-            let document = try NoteEdit.applying(proposal.operations, to: editor.document)
+            let chosen = index.map { [proposal.operations[$0]] } ?? proposal.operations
+            let document = try NoteEdit.applying(chosen, to: editor.document)
             editor.applyAssistantDocument(document)
             app.store.updateDocument(noteID, editor.document)
-            sessions[noteID]?.messages[i].proposal?.state = .applied
+            if let index, proposal.operations.count > 1 {
+                var rest = proposal.operations
+                rest.remove(at: index)
+                var before = proposal.before
+                if before.indices.contains(index) { before.remove(at: index) }
+                var locations = proposal.locations
+                if var values = locations, values.indices.contains(index) {
+                    values.remove(at: index)
+                    locations = values
+                }
+                var formatting = proposal.removesFormatting
+                if var values = formatting, values.indices.contains(index) {
+                    values.remove(at: index)
+                    formatting = values
+                }
+                let rebased = NoteEdit.rebase(rest, after: chosen)
+                proposal.operations = rebased.map(\.operation)
+                proposal.before = rebased.map { before.indices.contains($0.offset) ? before[$0.offset] : "" }
+                proposal.locations = locations.map { values in rebased.map { values.indices.contains($0.offset) ? values[$0.offset] : "" } }
+                proposal.removesFormatting = formatting.map { values in rebased.map { values.indices.contains($0.offset) ? values[$0.offset] : false } }
+                app.store.flush()
+                let revision = try NoteEdit.revision(editor.document)
+                proposal.revision = revision
+                proposal.diskRevision = revision
+                if proposal.operations.isEmpty { proposal.state = .applied }
+            } else {
+                proposal.state = .applied
+            }
+            sessions[noteID]?.messages[i].proposal = proposal
             persist()
         } catch { self.error = error.localizedDescription }
+    }
+
+    func skip(_ proposalID: UUID, index: Int, noteID: UUID) {
+        guard var proposal = sessions[noteID]?.messages.first(where: { $0.proposal?.id == proposalID })?.proposal,
+              proposal.state == .pending, proposal.operations.indices.contains(index),
+              let i = sessions[noteID]?.messages.firstIndex(where: { $0.proposal?.id == proposalID }) else { return }
+        proposal.operations.remove(at: index)
+        if proposal.before.indices.contains(index) { proposal.before.remove(at: index) }
+        if var locations = proposal.locations, locations.indices.contains(index) {
+            locations.remove(at: index)
+            proposal.locations = locations
+        }
+        if var formatting = proposal.removesFormatting, formatting.indices.contains(index) {
+            formatting.remove(at: index)
+            proposal.removesFormatting = formatting
+        }
+        if proposal.operations.isEmpty { proposal.state = .dismissed }
+        sessions[noteID]?.messages[i].proposal = proposal
+        persist()
     }
 
     func deleteNote(_ noteID: UUID) {
@@ -210,18 +300,33 @@ final class NoteAssistant {
 
     func shutdown() {
         tasks.values.forEach { $0.cancel() }
+        draftSaves.values.forEach { $0.cancel() }
         persist()
         io.sync {}
+    }
+
+    private func present(_ update: ChatStreamUpdate, noteID: UUID, messageID: UUID) {
+        guard let i = sessions[noteID]?.messages.firstIndex(where: { $0.id == messageID }) else { return }
+        let thought = String(update.thought.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4_000))
+        sessions[noteID]?.messages[i].thought = thought.isEmpty ? nil : thought
+        sessions[noteID]?.messages[i].text = update.visibleReply
+    }
+
+    private func dropPlaceholder(_ noteID: UUID) {
+        guard let id = placeholders.removeValue(forKey: noteID) else { return }
+        sessions[noteID]?.messages.removeAll { $0.id == id }
     }
 
     private func fail(_ noteID: UUID, _ message: String) {
         busyNotes.remove(noteID); tasks[noteID] = nil; snapshots[noteID] = nil
         sessions[noteID]?.awaitingReply = false
+        dropPlaceholder(noteID)
         addNotice(message, to: noteID)
     }
 
-    private func finish(_ noteID: UUID, text: String, model: ChatModel) {
+    private func finish(_ noteID: UUID, text: String, thought: String? = nil, model: ChatModel, messageID: UUID? = nil) {
         busyNotes.remove(noteID); tasks[noteID] = nil
+        placeholders[noteID] = nil
         defer { snapshots[noteID] = nil; persist() }
         guard sessions[noteID]?.awaitingReply == true else { return }
         sessions[noteID]?.awaitingReply = false
@@ -244,8 +349,19 @@ final class NoteAssistant {
                                                  removesFormatting: operations.map { NoteEditPreview.removesFormatting($0, in: snapshot) })
                 }
             }
-            sessions[noteID]?.messages.append(NoteChatMessage(role: .assistant, text: reply.reply, proposal: proposal, modelID: model.rawValue))
-        } catch { addNotice("The reply couldn't be read safely. No changes were applied. \(error.localizedDescription)", to: noteID) }
+            let cleaned = thought?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = NoteChatMessage(id: messageID ?? UUID(), role: .assistant, text: reply.reply,
+                                          thought: cleaned?.isEmpty == false ? String(cleaned!.prefix(4_000)) : nil,
+                                          proposal: proposal, modelID: model.rawValue)
+            if let messageID, let index = sessions[noteID]?.messages.firstIndex(where: { $0.id == messageID }) {
+                sessions[noteID]?.messages[index] = message
+            } else {
+                sessions[noteID]?.messages.append(message)
+            }
+        } catch {
+            if let messageID { sessions[noteID]?.messages.removeAll { $0.id == messageID } }
+            addNotice("The reply couldn't be read safely. No changes were applied. \(error.localizedDescription)", to: noteID)
+        }
     }
 
     private func diskRevision(_ noteID: UUID) -> String? {

@@ -12,6 +12,10 @@ struct AssistantOperation: Codable, Equatable {
     let block: Int
     let text: String
     let kind: String
+
+    func moved(to block: Int) -> AssistantOperation {
+        AssistantOperation(action: action, block: block, text: text, kind: kind)
+    }
 }
 
 struct AssistantReply: Codable {
@@ -37,10 +41,10 @@ struct AssistantReply: Codable {
 struct AssistantProposal: Codable, Identifiable {
     let id: UUID
     let noteID: UUID
-    let revision: String
-    let operations: [AssistantOperation]
-    let before: [String]
-    let diskRevision: String?
+    var revision: String
+    var operations: [AssistantOperation]
+    var before: [String]
+    var diskRevision: String?
     var state: State = .pending
     var locations: [String]?
     var removesFormatting: [Bool]?
@@ -106,6 +110,31 @@ enum NoteEdit {
         }
         guard blocks.first?.kind == .title else { throw AssistantError.message("The note's title must be preserved.") }
         return NoteDocument(blocks: blocks)
+    }
+
+    /// Talk and small edits stay on the fast setting. Reworking the note earns a deeper pass.
+    static func effort(for prompt: String) -> String {
+        let heavy = ["rewrite", "restructure", "reorganize", "from scratch", "start over", "entire note", "whole note"]
+        let lowered = prompt.lowercased()
+        return heavy.contains { lowered.contains($0) } ? "medium" : "low"
+    }
+
+    /// Rewrites operations that still refer to the snapshot so they refer to the document after
+    /// `applied` was accepted. The returned offset is the operation's index in `operations`.
+    /// An insertion after a block lands after insertions already accepted on that same block.
+    /// An operation whose block was deleted is dropped.
+    static func rebase(_ operations: [AssistantOperation], after applied: [AssistantOperation]) -> [(offset: Int, operation: AssistantOperation)] {
+        let deleted = Set(applied.filter { $0.action == .delete }.map(\.block))
+        var result: [(offset: Int, operation: AssistantOperation)] = []
+        for (offset, operation) in operations.enumerated() {
+            guard !deleted.contains(operation.block) else { continue }
+            let insertsBefore = applied.filter { $0.action == .insertAfter && $0.block < operation.block }.count
+            let deletesBefore = applied.filter { $0.action == .delete && $0.block < operation.block }.count
+            let sameBlockInserts = operation.action == .insertAfter
+                ? applied.filter { $0.action == .insertAfter && $0.block == operation.block }.count : 0
+            result.append((offset, operation.moved(to: operation.block - deletesBefore + insertsBefore + sameBlockInserts)))
+        }
+        return result
     }
 
     static let instructions = """

@@ -7,10 +7,12 @@ struct TopBar: View {
     var body: some View {
         let style = app.chromeStyle
         HStack(spacing: 0) {
-            Color.clear.frame(width: 160) // traffic lights and balance for trailing actions
-            Spacer(minLength: 8)
+            // Traffic lights and balance for the trailing actions. This shrinks with the
+            // window so a narrow window never overflows the row it sits in.
+            Color.clear.frame(minWidth: 78, maxWidth: 160)
+            Spacer(minLength: 6)
             TabStrip(style: style)
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
             HStack(spacing: 6) {
                 BarButton(label: "Chat", help: "Chat about this note (⌥⌘J)", isOn: app.isChatOpen, style: style) {
                     withAnimation(.snappy(duration: 0.25)) { app.isChatOpen.toggle() }
@@ -24,7 +26,7 @@ struct TopBar: View {
                     app.isPaletteOpen = true
                 }
             }
-            .frame(width: 210, alignment: .trailing)
+            .frame(maxWidth: 210, alignment: .trailing)
         }
         .padding(.horizontal, 12)
         .padding(.top, 3)
@@ -56,6 +58,8 @@ struct BarButton: View {
         Button(action: action) {
             Text(label)
                 .font(.system(size: 11.5, weight: .medium))
+                .lineLimit(1)
+                .fixedSize()
                 .foregroundStyle(isOn ? style.text : style.tertiary.mix(with: style.text, by: hovering ? 0.5 : 0.25))
                 .frame(minWidth: 26, minHeight: 24)
                 .padding(.horizontal, 6)
@@ -111,11 +115,10 @@ struct TabItem: View {
                 .opacity(isActive ? 1 : 0.7)
             Text(note.displayTitle)
                 .font(.system(size: 12, weight: isActive ? .medium : .regular))
-                .foregroundStyle(isActive ? style.text : style.tertiary.mix(with: style.text, by: hovering ? 0.45 : 0.2))
+                .foregroundStyle(style.text.opacity(isActive ? 1 : 0.7))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: 150, alignment: .leading)
-                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 44, maxWidth: 150, alignment: .leading)
             ZStack {
                 if hovering || isActive && app.tabs.count > 1 {
                     Button { app.close(note.id) } label: {

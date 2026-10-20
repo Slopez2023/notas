@@ -17,13 +17,13 @@ We compared three concrete sketches in [the interactive prototype](prototypes/ed
 
 **Changes** is the default. Each edit has a contextual location and separate Before and After lines. Removed words are struck through; added words are underlined. Colors reinforce those marks. Unchanged words retain ordinary styling, so both sentences remain readable. **Proposed** and **Original** show clean text without comparison marks.
 
-The first native render used one inline diff. It fragmented larger rewrites into alternating fragments, so the implementation switched to stacked lines. The existing batch acceptance remains explicit: **Accept change** or **Accept N changes**, followed by **Keep original**. Acceptance creates one editor Undo action. Acknowledgments describe the historical decision, not whether the note still contains the accepted text after Undo.
+The first native render used one inline diff. It fragmented larger rewrites into alternating fragments, so the implementation switched to stacked lines. One change offers **Accept change** and **Keep original**. Several changes open one at a time, with **Accept this change**, **Skip**, and **Accept all**. Each accept is one editor Undo. Acknowledgments describe the historical decision, not whether the note still contains the accepted text after Undo.
 
 New proposals persist section-based locations while the request snapshot is available. Older proposals use excerpts from their saved original text. Unchanged replacements are filtered only after the complete model response passes validation. The assistant is instructed to make focused corrections, preserve the writer's voice, and leave the exact rewritten text to the preview.
 
 ## Implementation shape
 
-The sidebar calls `NoteProposalCard` with the proposal, style, and two lifecycle actions. `NoteEditPreview` supplies bounded, lossless text differences and snapshot-derived locations. `NoteAssistant.finish` validates the model response, removes no-ops, and captures optional locations and formatting-impact flags. `NoteAssistant.apply` remains the only acceptance path and retains the full-document and disk revision checks.
+The sidebar calls `NoteProposalCard` with the proposal, style, and accept, skip, and dismiss actions. `NoteEditPreview` supplies bounded, lossless text differences and snapshot-derived locations. Differences are cached in memory for the card's lifetime on screen. `NoteAssistant.finish` validates the model response, removes no-ops, and captures optional locations and formatting-impact flags. `NoteAssistant.apply` retains the full-document and disk revision checks. Accepting one operation rebases the rest with `NoteEdit.rebase` and updates the proposal revision, so the next accept still matches the note. Skip removes an operation without touching the note.
 
 Diff segments are display data. They never reconstruct the operations applied to the note. The diff preserves extended grapheme clusters, whitespace, and punctuation. It caps detailed comparison at 1,000 tokens per side and 160,000 token pairs. Longer inputs use a common-prefix-and-suffix comparison. Both render paths reproduce the exact original and proposed strings.
 
@@ -35,7 +35,7 @@ The sidebar-card design is the base because it improves inspection without addin
 
 The independent design candidate favored the same direction and contributed the formatting notice, no-op policy, bounded diff, and persisted locations. Its normalized batch schema was rejected for this scope. The cross-judge preferred the focused implementation on scope, compatibility, and maintenance. Its labeling finding was fixed by naming each block kind and counting matching kinds within the section; formatting notices were narrowed to affected rows. Claude's initial grounding task failed because of a rate limit. The Grok candidate produced no artifact during the bounded exploration and was cancelled.
 
-Individual acceptance is deferred. Blocks currently have no stable IDs, and insertions or deletions change later indices. Adding buttons without addressing that would make remaining suggestions unsafe or stale. The first release deliberately keeps whole-batch acceptance.
+Individual acceptance does not need stable block IDs. Remaining operations are rebased against the original indexes: a deletion shifts later blocks down, and an insertion after a block lands after insertions already accepted there. An operation whose block was deleted is dropped. Accept all applies whatever remains in one Undo.
 
 Text-changing replacements still use plain text inside the rewritten paragraph. Affected replacement rows state this before acceptance. Older proposals without formatting metadata retain a general notice. Preserving rich inline formatting through replacements is a separate editor change.
 

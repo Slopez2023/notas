@@ -26,6 +26,8 @@ class Handler(BaseHTTPRequestHandler):
                 'session': self.headers.get('x-opencode-session'),
                 'model': body.get('model'),
                 'effort': body.get('reasoning_effort') if chat else (body.get('reasoning') or {}).get('effort'),
+                'summary': None if chat else (body.get('reasoning') or {}).get('summary'),
+                'stream': body.get('stream') is True,
                 'strict': ((body.get('text') or {}).get('format') or {}).get('strict'),
                 'format': (body.get('response_format') or {}).get('type'),
                 'system_schema': chat and turns[0].get('role') == 'system' and '"operations"' in turns[0].get('content', ''),
@@ -66,15 +68,39 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"error":{"message":"Wrong model protocol or parameters"}}')
             return
-        data = json.dumps(payload).encode()
+        if body.get('stream') is True and not chat:
+            reply_text = payload['output'][1]['content'][0]['text']
+            chunks = [sse('response.reasoning_summary_text.delta', {
+                'type': 'response.reasoning_summary_text.delta',
+                'delta': 'Checking the requested edit.',
+            })]
+            for start in range(0, len(reply_text), 24):
+                chunks.append(sse('response.output_text.delta', {
+                    'type': 'response.output_text.delta',
+                    'delta': reply_text[start:start + 24],
+                }))
+            chunks.append(sse('response.completed', {
+                'type': 'response.completed',
+                'response': payload,
+            }))
+            chunks.append(b'data: [DONE]\n\n')
+            data = b''.join(chunks)
+            content_type = 'text/event-stream'
+        else:
+            data = json.dumps(payload).encode()
+            content_type = 'application/json'
         self.send_response(200)
-        self.send_header('content-type', 'application/json')
+        self.send_header('content-type', content_type)
         self.send_header('content-length', str(len(data)))
         self.end_headers()
         try:
             self.wfile.write(data)
         except BrokenPipeError:
             pass
+
+
+def sse(event, payload):
+    return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n".encode()
 
 
 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)

@@ -32,6 +32,7 @@ struct NoteChatSidebar: View {
             }
         }
         .foregroundStyle(style.text)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(style.background)
         .alert("Chat needs attention", isPresented: Binding(get: { assistant.error != nil }, set: { if !$0 { assistant.error = nil } })) {
             Button("OK") { assistant.error = nil }
@@ -144,21 +145,33 @@ struct NoteChatSidebar: View {
                         }.padding(.vertical, 12)
                     }
                     ForEach(displayed.messages) { message in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(message.role == .user ? "You" : message.role == .assistant ? message.modelLabel : "Conversation")
-                                .font(.system(size: 10, weight: .semibold)).foregroundStyle(style.tertiary)
-                            Text(message.text)
-                                .font(.system(size: 13)).lineSpacing(4).textSelection(.enabled)
-                                .foregroundStyle(message.role == .notice ? style.secondary : style.text)
-                                .fixedSize(horizontal: false, vertical: true)
-                            if let proposal = message.proposal { proposalCard(proposal) }
+                        if message.role != .assistant || !message.text.isEmpty || message.thought != nil || message.proposal != nil {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(message.role == .user ? "You" : message.role == .assistant ? message.modelLabel : "Conversation")
+                                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(style.tertiary)
+                                if let thought = message.thought, !thought.isEmpty {
+                                    Text(thought)
+                                        .font(.system(size: 12)).lineSpacing(3)
+                                        .foregroundStyle(style.secondary)
+                                        .lineLimit(message.text.isEmpty ? 4 : 1)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .accessibilityLabel("Reasoning summary")
+                                }
+                                if !message.text.isEmpty {
+                                    Text(message.text)
+                                        .font(.system(size: 13)).lineSpacing(4).textSelection(.enabled)
+                                        .foregroundStyle(message.role == .notice ? style.secondary : style.text)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                if let proposal = message.proposal { proposalCard(proposal) }
+                            }
+                            .padding(message.role == .user ? 12 : 0)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(message.role == .user ? style.surface : .clear, in: RoundedRectangle(cornerRadius: 10))
+                            .id(message.id)
                         }
-                        .padding(message.role == .user ? 12 : 0)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(message.role == .user ? style.surface : .clear, in: RoundedRectangle(cornerRadius: 10))
-                        .id(message.id)
                     }
-                    if busy && !isHistory {
+                    if busy && !isHistory && !assistantIsVisible {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
                             Text("Working on this note…").font(.caption).foregroundStyle(style.secondary)
@@ -167,14 +180,24 @@ struct NoteChatSidebar: View {
                     Color.clear.frame(height: 1).id("bottom")
                 }.padding(16)
             }
+            .frame(maxHeight: .infinity)
             .onChange(of: displayed.messages.count) { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: displayed.messages.last?.text) { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: displayed.messages.last?.thought) { proxy.scrollTo("bottom", anchor: .bottom) }
             .onChange(of: busy) { proxy.scrollTo("bottom", anchor: .bottom) }
         }
+    }
+
+    private var assistantIsVisible: Bool {
+        guard let last = displayed.messages.last, last.role == .assistant else { return false }
+        return !(last.thought ?? "").isEmpty || !last.text.isEmpty
     }
 
     private func proposalCard(_ proposal: AssistantProposal) -> some View {
         NoteProposalCard(proposal: proposal, style: style, readOnly: isHistory, busy: busy,
                          accept: { assistant.apply(proposal.id, noteID: noteID) },
+                         acceptOne: { assistant.apply(proposal.id, noteID: noteID, only: $0) },
+                         skip: { assistant.skip(proposal.id, index: $0, noteID: noteID) },
                          keepOriginal: { assistant.dismiss(proposal.id, noteID: noteID) })
     }
 

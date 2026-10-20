@@ -24,6 +24,7 @@ enum SelfTest {
         resizing()
         phase4()
         sharing()
+        performance()
         print(failures == 0 ? "✓ \(passes) checks passed" : "✗ \(failures) failed, \(passes) passed")
         return failures == 0
     }
@@ -783,6 +784,138 @@ enum SelfTest {
 
         reloaded.deleteNotebook(nb.id)
         check(reloaded.notes[note.id]?.notebookID != nb.id, "deleting a notebook moves its notes")
+    }
+
+    // MARK: Performance paths
+    // Behavior the speed-ups must not change: restyle skipping, the search index, compact files, photo import.
+
+    private static func performance() {
+        // Inserting a numbered item renumbers the items after it, even though they weren't edited.
+        let tv = makeEditor([Block(kind: .title, runs: [InlineRun(text: "T")])] +
+                            (1...6).map { Block(kind: .numbered, runs: [InlineRun(text: "item \($0)")]) })
+        func ordinal(_ text: String) -> Int? {
+            guard let storage = tv.textStorage else { return nil }
+            let found = (tv.string as NSString).range(of: text)
+            guard found.location != NSNotFound else { return nil }
+            return storage.attribute(.notasOrdinal, at: found.location, effectiveRange: nil) as? Int
+        }
+        let initial: [Int?] = (1...6).map { n in ordinal("item " + String(n)) }
+        check(initial == [1, 2, 3, 4, 5, 6], "list starts numbered 1…6 (got \(initial))")
+        tv.setSelectedRange(NSRange(location: (tv.string as NSString).range(of: "item 2").upperBound, length: 0))
+        type(tv, "\nnew")
+        check(ordinal("new") == 3 && ordinal("item 3") == 4 && ordinal("item 6") == 7, "inserting an item renumbers the rest")
+        tv.setSelectedRange(NSRange(location: (tv.string as NSString).range(of: "new").location, length: 0))
+        tv.setBlockKind(.body)
+        check(ordinal("item 2") == 2 && ordinal("item 3") == 1 && ordinal("item 6") == 4, "splitting a list restarts numbering after the gap")
+
+        // A theme change reaches paragraphs that never changed.
+        let light = ResolvedStyle(style: NoteStyle(themeID: "ink"), systemIsDark: false, appAccent: .violet)
+        let dark = ResolvedStyle(style: NoteStyle(themeID: "midnight"), systemIsDark: true, appAccent: .violet)
+        tv.applyStyle(light)
+        let lightText = tv.textStorage?.attribute(.foregroundColor, at: (tv.string as NSString).range(of: "item 6").location, effectiveRange: nil) as? NSColor
+        tv.applyStyle(dark)
+        let darkText = tv.textStorage?.attribute(.foregroundColor, at: (tv.string as NSString).range(of: "item 6").location, effectiveRange: nil) as? NSColor
+        check(lightText != nil && lightText != darkText, "changing theme restyles untouched paragraphs")
+        check(tv.document.blocks.count == 8, "restyling keeps every paragraph")
+
+        // Search sees edits immediately even though it caches lowercased text.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notas-selftest-perf-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = LibraryStore(rootURL: dir)
+        store.load()
+        let note = store.createNote(in: nil)
+        store.updateDocument(note.id, NoteDocument(blocks: [Block(kind: .title, runs: [InlineRun(text: "Alpine")]),
+                                                            Block(kind: .body, runs: [InlineRun(text: "Marmot Burrow")])]))
+        check(store.search("marmot").first?.note.id == note.id, "search finds body text (and builds the index)")
+        store.updateDocument(note.id, NoteDocument(blocks: [Block(kind: .title, runs: [InlineRun(text: "Alpine")]),
+                                                            Block(kind: .body, runs: [InlineRun(text: "Ibex")])]))
+        check(store.search("marmot").isEmpty && store.search("ibex").first?.note.id == note.id, "search index follows edits")
+        store.mutate(note.id) { $0.document.blocks[0].runs = [InlineRun(text: "Glacier")] }
+        check(store.search("glacier").first?.note.id == note.id && store.search("alpine").isEmpty, "search index follows mutate")
+        check(store.search("ibex").first?.snippet?.lowercased().contains("ibex") == true, "search hits carry a snippet")
+        store.trash(note.id)
+        check(store.search("ibex").isEmpty, "trashed notes leave search")
+
+        // Previews stop after three lines and skip the title and empty paragraphs.
+        let long = Note(id: UUID(), notebookID: UUID(), tags: [], created: Date(), modified: Date(), pinned: false, style: NoteStyle(),
+                        document: NoteDocument(blocks: [Block(kind: .title, runs: [InlineRun(text: "Title")]),
+                                                        Block(kind: .body, runs: []),
+                                                        Block(kind: .body, runs: [InlineRun(text: "one")]),
+                                                        Block(kind: .body, runs: [InlineRun(text: "  two  ")]),
+                                                        Block(kind: .body, runs: [InlineRun(text: "three")]),
+                                                        Block(kind: .body, runs: [InlineRun(text: "four")])]))
+        check(long.preview == "one two three", "preview is the first three non-empty lines (got '\(long.preview)')")
+
+        // Files are compact, old pretty-printed files still open, and sketch points are trimmed.
+        let sketch = SketchStroke(tool: .pen, color: nil, size: 2.8, points: [1.23456789, 2.98765432])
+        let sketchNote = Note(id: UUID(), notebookID: UUID(), tags: ["a"], created: Date(), modified: Date(), pinned: false, style: NoteStyle(),
+                              document: NoteDocument(blocks: [Block(kind: .title, runs: [InlineRun(text: "S")]),
+                                                              Block(kind: .sketch, runs: [], payload: BlockPayload(sketch: SketchData(width: 10, height: 10, strokes: [sketch])))]))
+        if let data = try? LibraryStore.encoder.encode(sketchNote), let text = String(data: data, encoding: .utf8) {
+            check(!text.contains("\n"), "note files are written compact")
+            check(text.contains("1.23") && !text.contains("1.234"), "sketch points are stored to two decimals")
+            let pretty = JSONEncoder()
+            pretty.outputFormatting = [.prettyPrinted, .sortedKeys]
+            pretty.dateEncodingStrategy = .iso8601
+            let old = (try? pretty.encode(sketchNote)).flatMap { try? LibraryStore.decoder.decode(Note.self, from: $0) }
+            check(old?.id == sketchNote.id && old?.tags == ["a"], "pretty-printed files from earlier versions still load")
+        } else { check(false, "note encodes") }
+
+        // Parallel load returns every note, including with more notes than workers.
+        let many = LibraryStore(rootURL: dir.appendingPathComponent("many"))
+        many.load()
+        let ids = (0..<40).map { i -> UUID in
+            let n = many.createNote(in: nil)
+            many.updateDocument(n.id, NoteDocument(blocks: [Block(kind: .title, runs: [InlineRun(text: "Note \(i)")]), Block(kind: .body, runs: [InlineRun(text: "body \(i)")])]))
+            return n.id
+        }
+        many.flush()
+        let reopened = LibraryStore(rootURL: dir.appendingPathComponent("many"))
+        reopened.load()
+        check(ids.allSatisfy { reopened.notes[$0] != nil } && reopened.notes.count == 41, "parallel load reads every note (got \(reopened.notes.count))")
+
+        // Photo import keeps small files, shrinks big ones, and the thumbnail cache serves repeat requests.
+        let photoDir = dir.appendingPathComponent("photos")
+        try? FileManager.default.createDirectory(at: photoDir, withIntermediateDirectories: true)
+        let assets = NoteAssets(package: photoDir.appendingPathComponent("p.notas"))
+        func makePhoto(_ width: Int, _ height: Int, as type: NSBitmapImageRep.FileType, name: String) -> URL? {
+            guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4,
+                                             hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+                  let data = rep.representation(using: type, properties: [:]) else { return nil }
+            let url = photoDir.appendingPathComponent(name)
+            return (try? data.write(to: url)) != nil ? url : nil
+        }
+        if let small = makePhoto(400, 300, as: .jpeg, name: "small.jpg"), let big = makePhoto(4000, 1000, as: .png, name: "big.png") {
+            do {
+                let smallName = try assets.importFile(small)[0]
+                let bigName = try assets.importFile(big)[0]
+                let copied = try Data(contentsOf: assets.url(for: smallName)!)
+                let original = try Data(contentsOf: small)
+                check(smallName.hasSuffix(".jpg") && copied == original, "small JPEG is copied untouched")
+                let bigSize = NSImage(contentsOf: assets.url(for: bigName)!)?.representations.first.map { max($0.pixelsWide, $0.pixelsHigh) } ?? 0
+                check(bigSize == NoteAssets.maxStoredPixels, "oversized photos are shrunk to \(NoteAssets.maxStoredPixels)px (got \(bigSize))")
+                check(PhotoCache.cached(assets.url(for: smallName)!, maxPixel: 200) == nil, "thumbnail cache starts empty")
+                let sem = DispatchSemaphore(value: 0)
+                nonisolated(unsafe) var thumb: NSImage?
+                let thumbURL = assets.url(for: smallName)!
+                Task.detached { thumb = await PhotoCache.load(thumbURL, maxPixel: 200); sem.signal() }
+                sem.wait()
+                check(max(thumb?.size.width ?? 0, thumb?.size.height ?? 0) == 200, "thumbnail is downsampled to the requested size")
+                check(PhotoCache.cached(thumbURL, maxPixel: 200) != nil, "thumbnail is cached after the first load")
+
+                // The gallery tile view loads its photo through the cache once it is on screen.
+                let host = NSHostingView(rootView: PhotoImage(url: thumbURL, maxPixel: 640, fill: true) { Color.red })
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 120), styleMask: [.borderless], backing: .buffered, defer: false)
+                window.contentView = host
+                host.layoutSubtreeIfNeeded()
+                let deadline = Date().addingTimeInterval(3)
+                while PhotoCache.cached(thumbURL, maxPixel: 640) == nil, Date() < deadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                }
+                check(PhotoCache.cached(thumbURL, maxPixel: 640) != nil, "PhotoImage loads its photo into the cache")
+                window.contentView = nil
+            } catch { check(false, "photo import: \(error)") }
+        } else { check(false, "test photos could not be created") }
     }
 }
 #endif

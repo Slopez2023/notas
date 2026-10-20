@@ -130,6 +130,7 @@ struct DrawerRow: View {
     var body: some View {
         let isActive = app.activeNoteID == note.id
         let notebook = app.store.notebook(note.notebookID)
+        let preview = note.preview
         Button {
             let newTab = NSEvent.modifierFlags.contains(.command)
             app.open(note.id, newTab: newTab)
@@ -150,8 +151,8 @@ struct DrawerRow: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(style.tertiary)
                 }
-                if !note.preview.isEmpty {
-                    Text(note.preview)
+                if !preview.isEmpty {
+                    Text(preview)
                         .font(.system(size: 12))
                         .foregroundStyle(style.secondary.opacity(0.75))
                         .lineLimit(2)

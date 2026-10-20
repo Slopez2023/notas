@@ -15,6 +15,7 @@ Requires Apple Silicon, macOS 26, and the Xcode Command Line Tools (full Xcode n
 scripts/run.sh                                  # build Notas.app and open it
 NOTAS_LIBRARY=/tmp/scratch scripts/run.sh       # use a throwaway library instead of iCloud Drive
 scripts/test.sh                                 # headless self-test: codec, editor behavior, storage
+scripts/bench.sh                                # release-build timings: load, search, save, editor, photos
 scripts/build-app.sh release                    # release build in build/Notas.app
 swift scripts/make-icon.swift                   # redraw Resources/AppIcon.icns
 ```

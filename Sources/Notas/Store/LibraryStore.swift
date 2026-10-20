@@ -16,6 +16,13 @@ final class LibraryStore {
     @ObservationIgnored var onLibraryChange: (() -> Void)?
 
     @ObservationIgnored private var pendingSaves: [UUID: Task<Void, Never>] = [:]
+    /// Lowercased title and body per note, so a search doesn't rebuild them for every note on
+    /// every keystroke. Dropped whenever a note's content may have changed.
+    @ObservationIgnored private var searchIndex: [UUID: SearchEntry] = [:]
+    private struct SearchEntry {
+        let title: String
+        let lowerBody: String
+    }
     @ObservationIgnored private let io = DispatchQueue(label: "notas.library.io", qos: .utility)
 
     init(rootURL: URL = LibraryStore.defaultRoot()) {
@@ -57,15 +64,10 @@ final class LibraryStore {
             notebooks = decoded.sorted { $0.order < $1.order }
         }
 
-        var loaded: [UUID: Note] = [:]
-        let packages = (try? fm.contentsOfDirectory(at: notesURL, includingPropertiesForKeys: nil)) ?? []
-        for package in packages where package.pathExtension == "notas" {
-            let file = package.appendingPathComponent("note.json")
-            guard let data = try? Data(contentsOf: file),
-                  let note = try? Self.decoder.decode(Note.self, from: data) else { continue }
-            loaded[note.id] = note
-        }
-        notes = loaded
+        let packages = ((try? fm.contentsOfDirectory(at: notesURL, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "notas" }
+        notes = Dictionary(Self.readNotes(in: packages).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        searchIndex.removeAll()
 
         // Notes that were opened but never written in aren't worth keeping.
         for (id, note) in notes where note.document.isEmpty && note.tags.isEmpty {
@@ -82,6 +84,28 @@ final class LibraryStore {
                 scheduleSave(id)
             }
         }
+    }
+
+    /// Decodes every note package, spread across the CPU cores. Decoding dominates launch time
+    /// for big libraries, and each note is independent.
+    nonisolated private static func readNotes(in packages: [URL]) -> [Note] {
+        let count = packages.count
+        guard count > 0 else { return [] }
+        // Each worker writes only its own indices, so sharing the buffer is safe.
+        struct Slots: @unchecked Sendable { let base: UnsafeMutablePointer<Note?> }
+        let storage = UnsafeMutablePointer<Note?>.allocate(capacity: count)
+        storage.initialize(repeating: nil, count: count)
+        defer { storage.deinitialize(count: count); storage.deallocate() }
+        let slots = Slots(base: storage)
+        let workers = count < 8 ? 1 : min(ProcessInfo.processInfo.activeProcessorCount, 8)
+        DispatchQueue.concurrentPerform(iterations: workers) { worker in
+            let decoder = makeDecoder()
+            for i in stride(from: worker, to: count, by: workers) {
+                guard let data = try? Data(contentsOf: packages[i].appendingPathComponent("note.json")) else { continue }
+                slots.base[i] = try? decoder.decode(Note.self, from: data)
+            }
+        }
+        return (0..<count).compactMap { storage[$0] }
     }
 
     private func seedFirstRun() {
@@ -147,6 +171,7 @@ final class LibraryStore {
     /// Replace a note's content. Saves after a short pause so typing stays smooth.
     func updateDocument(_ id: UUID, _ document: NoteDocument) {
         guard var note = notes[id], note.document != document else { return }
+        searchIndex[id] = nil
         note.document = document
         note.modified = Date()
         notes[id] = note
@@ -155,6 +180,7 @@ final class LibraryStore {
 
     func mutate(_ id: UUID, touch: Bool = true, _ change: (inout Note) -> Void) {
         guard var note = notes[id] else { return }
+        searchIndex[id] = nil
         change(&note)
         if touch { note.modified = Date() }
         notes[id] = note
@@ -187,6 +213,7 @@ final class LibraryStore {
         pendingSaves[id]?.cancel()
         pendingSaves[id] = nil
         notes[id] = nil
+        searchIndex[id] = nil
         onLibraryChange?()
         let from = packageURL(for: id)
         let to = packageURL(for: id, in: trashURL)
@@ -269,25 +296,33 @@ final class LibraryStore {
                 .map { SearchHit(note: $0, score: 0, snippet: nil) }
         }
         let terms = q.split(separator: " ").map(String.init)
-        var hits: [SearchHit] = []
+        var ranked: [(note: Note, score: Int)] = []
         for note in notes.values {
-            let title = note.title.lowercased()
-            let body = note.document.bodyText
-            let lowerBody = body.lowercased()
+            let entry = searchEntry(for: note)
             var score = 0
             var matchedAll = true
             for term in terms {
-                if title.hasPrefix(term) { score += 100 }
-                else if title.contains(term) { score += 60 }
+                if entry.title.hasPrefix(term) { score += 100 }
+                else if entry.title.contains(term) { score += 60 }
                 else if note.tags.contains(where: { $0.hasPrefix(term) }) { score += 40 }
-                else if lowerBody.contains(term) { score += 10 }
+                else if entry.lowerBody.contains(term) { score += 10 }
                 else { matchedAll = false; break }
             }
             guard matchedAll else { continue }
-            score += note.pinned ? 5 : 0
-            hits.append(SearchHit(note: note, score: score, snippet: Self.snippet(in: body, around: terms[0])))
+            ranked.append((note, score + (note.pinned ? 5 : 0)))
         }
-        return hits.sorted { ($0.score, $0.note.modified) > ($1.score, $1.note.modified) }.prefix(limit).map { $0 }
+        ranked.sort { ($0.score, $0.note.modified) > ($1.score, $1.note.modified) }
+        // Snippets are only worth building for the rows that get shown.
+        return ranked.prefix(limit).map { hit in
+            SearchHit(note: hit.note, score: hit.score, snippet: Self.snippet(in: hit.note.document.bodyText, around: terms[0]))
+        }
+    }
+
+    private func searchEntry(for note: Note) -> SearchEntry {
+        if let cached = searchIndex[note.id] { return cached }
+        let entry = SearchEntry(title: note.title.lowercased(), lowerBody: note.document.bodyText.lowercased())
+        searchIndex[note.id] = entry
+        return entry
     }
 
     private static func snippet(in text: String, around term: String) -> String? {
@@ -329,6 +364,7 @@ final class LibraryStore {
             try data.write(to: dir.appendingPathComponent("note.json"), options: .atomic)
         }
         notes[note.id] = note
+        searchIndex[note.id] = nil
         onLibraryChange?()
     }
 
@@ -363,16 +399,18 @@ final class LibraryStore {
 
     static let encoder: JSONEncoder = {
         let e = JSONEncoder()
-        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         e.dateEncodingStrategy = .iso8601
         return e
     }()
 
-    static let decoder: JSONDecoder = {
+    static let decoder: JSONDecoder = makeDecoder()
+
+    nonisolated static func makeDecoder() -> JSONDecoder {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
         return d
-    }()
+    }
 }
 
 extension LibraryStore {

@@ -15,6 +15,13 @@ struct PaletteItem: Identifiable {
     let action: () -> Void
 }
 
+/// Remembers the sections built for the current query. The view body and the key monitor both
+/// need them on every keystroke, and building them runs a search over every note.
+private final class PaletteSections {
+    var query: String?
+    var sections: [(String, [PaletteItem])] = []
+}
+
 /// ⌘K: search notes, jump anywhere, run any command.
 struct CommandPalette: View {
     @Environment(AppState.self) private var app
@@ -22,11 +29,12 @@ struct CommandPalette: View {
     @State private var selection = 0
     @State private var monitor: Any?
     @State private var listHeight: CGFloat = 0
+    @State private var built = PaletteSections()
     @FocusState private var focused: Bool
 
     var body: some View {
         let style = app.chromeStyle
-        let sections = buildSections()
+        let sections = currentSections()
         let flat = sections.flatMap(\.1)
 
         ZStack(alignment: .top) {
@@ -109,7 +117,7 @@ struct CommandPalette: View {
 
     private func installKeyMonitor() {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let items = buildSections().flatMap(\.1)
+            let items = currentSections().flatMap(\.1)
             switch event.keyCode {
             case 125: // down
                 selection = min(selection + 1, max(items.count - 1, 0)); return nil
@@ -149,6 +157,14 @@ struct CommandPalette: View {
     }
 
     // MARK: Items
+
+    private func currentSections() -> [(String, [PaletteItem])] {
+        if built.query != query {
+            built.sections = buildSections()
+            built.query = query
+        }
+        return built.sections
+    }
 
     private func buildSections() -> [(String, [PaletteItem])] {
         let q = query.trimmingCharacters(in: .whitespaces)

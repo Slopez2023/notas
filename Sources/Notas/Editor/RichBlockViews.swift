@@ -40,9 +40,10 @@ struct RichBlockView: View {
                     Spacer()
                     Button("Done") { preview = nil }.keyboardShortcut(.cancelAction)
                 }
-                if let url = attachment.assets?.url(for: item.id), let image = NSImage(contentsOf: url) {
-                    Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else { ContentUnavailableView("Photo unavailable", systemImage: "photo", description: Text("Wait for iCloud to download this photo.")) }
+                PhotoImage(url: attachment.assets?.url(for: item.id), maxPixel: 2400, fill: false) {
+                    ContentUnavailableView("Photo unavailable", systemImage: "photo", description: Text("Wait for iCloud to download this photo."))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }.padding(20).frame(width: 760, height: 560)
         }
     }
@@ -135,12 +136,8 @@ struct RichBlockView: View {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: count), spacing: 8) {
                     ForEach(Array(images.enumerated()), id: \.offset) { index, name in
                         Button { preview = name } label: {
-                            Group {
-                                if let url = attachment.assets?.url(for: name), let image = NSImage(contentsOf: url) {
-                                    Image(nsImage: image).resizable().scaledToFill()
-                                } else {
-                                    Image(systemName: "icloud.and.arrow.down").frame(maxWidth: .infinity, maxHeight: .infinity)
-                                }
+                            PhotoImage(url: attachment.assets?.url(for: name), maxPixel: 1400, fill: true) {
+                                Image(systemName: "icloud.and.arrow.down").frame(maxWidth: .infinity, maxHeight: .infinity)
                             }.frame(height: height).frame(maxWidth: .infinity).clipped().clipShape(RoundedRectangle(cornerRadius: 7))
                         }.buttonStyle(.plain).accessibilityLabel("Photo \(index + 1)")
                         .contextMenu {
@@ -286,4 +283,42 @@ private struct PhotoPreviewID: Identifiable { let id: String }
 
 extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+
+/// A photo from the note's assets, decoded once at display size and cached. Shows `missing`
+/// when the file isn't there (for example, still downloading from iCloud).
+struct PhotoImage<Missing: View>: View {
+    let url: URL?
+    let maxPixel: Int
+    let fill: Bool
+    @ViewBuilder let missing: () -> Missing
+    @State private var image: NSImage?
+    @State private var failed = false
+
+    init(url: URL?, maxPixel: Int, fill: Bool, @ViewBuilder missing: @escaping () -> Missing) {
+        self.url = url
+        self.maxPixel = maxPixel
+        self.fill = fill
+        self.missing = missing
+        _image = State(initialValue: url.flatMap { PhotoCache.cached($0, maxPixel: maxPixel) })
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                if fill { Image(nsImage: image).resizable().scaledToFill() }
+                else { Image(nsImage: image).resizable().scaledToFit() }
+            } else if failed || url == nil {
+                missing()
+            } else {
+                Color.clear
+            }
+        }
+        .task(id: url) {
+            guard let url, image == nil else { return }
+            image = await PhotoCache.load(url, maxPixel: maxPixel)
+            failed = image == nil
+        }
+    }
 }

@@ -168,18 +168,23 @@ extension NotasTextView {
         let selection = selectedRange()
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self, weak attachment] response in
             guard response == .OK, let self else { return }
-            do {
-                guard let assets = self.noteAssets else { throw NoteAssets.AssetError.missing }
-                let names = try panel.urls.flatMap { try assets.importFile($0) }
-                if let attachment {
-                    var payload = attachment.state.payload
-                    payload.images = (payload.images ?? []) + names
-                    attachment.update(payload)
-                } else {
-                    self.setSelectedRange(NSRange(location: min(selection.location, (self.string as NSString).length), length: 0))
-                    self.insertRichBlock(.gallery, payload: BlockPayload(images: names))
-                }
-            } catch { self.presentAssetError(error) }
+            guard let assets = self.noteAssets else { self.presentAssetError(NoteAssets.AssetError.missing); return }
+            let urls = panel.urls
+            // Big photos take a moment to shrink; keep the editor responsive while they do.
+            Task { @MainActor [weak self, weak attachment] in
+                do {
+                    let names = try await Task.detached(priority: .userInitiated) { try urls.flatMap { try assets.importFile($0) } }.value
+                    guard let self else { return }
+                    if let attachment {
+                        var payload = attachment.state.payload
+                        payload.images = (payload.images ?? []) + names
+                        attachment.update(payload)
+                    } else {
+                        self.setSelectedRange(NSRange(location: min(selection.location, (self.string as NSString).length), length: 0))
+                        self.insertRichBlock(.gallery, payload: BlockPayload(images: names))
+                    }
+                } catch { self?.presentAssetError(error) }
+            }
         }
         if let window { panel.beginSheetModal(for: window, completionHandler: completion) }
         else { completion(panel.runModal()) }

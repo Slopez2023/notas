@@ -40,8 +40,8 @@ struct SketchCanvas: NSViewRepresentable {
 
         private func point(_ event: NSEvent) -> NSPoint {
             let p = convert(event.locationInWindow, from: nil)
-            return NSPoint(x: min(max(p.x, 0), bounds.width) / max(1, bounds.width) * data.width,
-                           y: min(max(p.y, 0), bounds.height) / max(1, bounds.height) * data.height)
+            return NSPoint(x: SketchStroke.rounded(min(max(p.x, 0), bounds.width) / max(1, bounds.width) * data.width),
+                           y: SketchStroke.rounded(min(max(p.y, 0), bounds.height) / max(1, bounds.height) * data.height))
         }
 
         override func mouseDown(with event: NSEvent) {

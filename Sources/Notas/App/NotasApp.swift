@@ -12,6 +12,12 @@ enum Entry {
             exit(SelfTest.run() ? 0 : 1)
         }
         #endif
+        #if DEBUG || BENCH
+        if CommandLine.arguments.contains("--bench") {
+            Benchmark.run()
+            exit(0)
+        }
+        #endif
         NotasApp.main()
     }
 }

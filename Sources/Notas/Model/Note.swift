@@ -15,12 +15,16 @@ struct Note: Codable, Identifiable, Equatable {
 
     /// A one-or-two line preview of the body for lists.
     var preview: String {
-        document.bodyText
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .prefix(3)
-            .joined(separator: " ")
+        // Stops reading blocks as soon as there are three lines; notes can be long.
+        var lines: [String] = []
+        for block in document.blocks.dropFirst() {
+            for line in block.plainText.split(whereSeparator: \.isNewline) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty { lines.append(trimmed) }
+                if lines.count == 3 { return lines.joined(separator: " ") }
+            }
+        }
+        return lines.joined(separator: " ")
     }
 
     static func new(in notebookID: UUID) -> Note {

@@ -227,7 +227,8 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         undoManager?.removeAllActions()
     }
 
-    var document: NoteDocument { RichTextCodec.document(from: attributedString()) }
+    /// Read straight from the text storage; `attributedString()` would copy the whole note first.
+    var document: NoteDocument { textStorage.map { RichTextCodec.document(from: $0) } ?? .empty }
 
     // MARK: Paragraph helpers
 

@@ -82,4 +82,18 @@ struct SketchStroke: Codable, Equatable {
     var size: Double
     /// Flattened x, y pairs.
     var points: [Double]
+
+    /// Hundredths of a point are invisible on the canvas, but a full-precision double costs
+    /// 17 digits in the note file for every coordinate.
+    static func rounded(_ value: Double) -> Double { (value * 100).rounded() / 100 }
+
+    private enum CodingKeys: String, CodingKey { case tool, color, size, points }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(tool, forKey: .tool)
+        try c.encodeIfPresent(color, forKey: .color)
+        try c.encode(size, forKey: .size)
+        try c.encode(points.map(Self.rounded), forKey: .points)
+    }
 }

@@ -29,7 +29,7 @@ final class DecorColors: NSObject {
 }
 
 /// Paragraph-level semantic attributes.
-struct BlockAttributes: Equatable {
+struct BlockAttributes: Hashable {
     var kind: BlockKind = .body
     var checked: Bool = false
     var indent: Int = 0

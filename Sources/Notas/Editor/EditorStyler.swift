@@ -3,7 +3,37 @@ import AppKit
 /// Turns semantic attributes (block kind, marks) into fonts, colors and paragraph styles
 /// for the current theme. Runs on every edit for the touched paragraphs.
 struct EditorStyler {
-    var style: ResolvedStyle
+    var style: ResolvedStyle {
+        didSet { if style != oldValue { cache = Cache() } }
+    }
+
+    /// Fonts, paragraph styles and decor colors only depend on the style, and the same few
+    /// combinations are asked for once per run or paragraph. Replaced whenever `style` changes.
+    private final class Cache {
+        var fonts: [FontKey: NSFont] = [:]
+        var paragraphStyles: [BlockAttributes: NSParagraphStyle] = [:]
+        var decor: DecorColors?
+        var colors: Palette?
+    }
+    private struct Palette {
+        let text, secondary, tertiary, accent, surface: NSColor
+        let accentOnText: NSColor
+    }
+    private var colors: Palette {
+        if let cached = cache.colors { return cached }
+        let made = Palette(text: style.nsText, secondary: style.nsSecondary, tertiary: style.nsTertiary,
+                           accent: style.nsAccent, surface: style.nsSurface,
+                           accentOnText: style.nsAccent.mixed(with: style.nsText, 0.35))
+        cache.colors = made
+        return made
+    }
+    private struct FontKey: Hashable {
+        let kind: BlockKind
+        let marks: InlineMarks
+    }
+    private var cache = Cache()
+
+    init(style: ResolvedStyle) { self.style = style }
 
     static let listIndent: CGFloat = 28
     static let nestedIndent: CGFloat = 24
@@ -41,6 +71,14 @@ struct EditorStyler {
     }
 
     func font(for kind: BlockKind, marks: InlineMarks) -> NSFont {
+        let key = FontKey(kind: kind, marks: marks)
+        if let cached = cache.fonts[key] { return cached }
+        let font = makeFont(for: kind, marks: marks)
+        cache.fonts[key] = font
+        return font
+    }
+
+    private func makeFont(for kind: BlockKind, marks: InlineMarks) -> NSFont {
         var f = baseFont(for: kind)
         if marks.contains(.code), kind != .code {
             f = FontChoice.mono.nsFont(size: round(f.pointSize * 0.9))
@@ -53,6 +91,16 @@ struct EditorStyler {
     // MARK: Paragraph styles
 
     func paragraphStyle(for attrs: BlockAttributes) -> NSParagraphStyle {
+        var key = attrs
+        if !attrs.kind.isList { key.indent = 0 }
+        key.checked = false
+        if let cached = cache.paragraphStyles[key] { return cached }
+        let made = makeParagraphStyle(for: key)
+        cache.paragraphStyles[key] = made
+        return made
+    }
+
+    private func makeParagraphStyle(for attrs: BlockAttributes) -> NSParagraphStyle {
         let p = NSMutableParagraphStyle()
         let s = bodySize
         let spacing = style.lineSpacing
@@ -111,10 +159,10 @@ struct EditorStyler {
     // MARK: Restyling
 
     var decor: DecorColors {
-        DecorColors(accent: style.nsAccent,
-                    muted: style.nsTertiary,
-                    panel: style.theme.isDark ? style.nsSurface : style.nsSurface,
-                    text: style.nsText)
+        if let cached = cache.decor { return cached }
+        let made = DecorColors(accent: style.nsAccent, muted: style.nsTertiary, panel: style.nsSurface, text: style.nsText)
+        cache.decor = made
+        return made
     }
 
     /// Restyle every paragraph touching `range`, widened to whole paragraphs and to whole lists
@@ -124,6 +172,9 @@ struct EditorStyler {
         guard ns.length > 0 else { return }
         let clamped = NSRange(location: min(range.location, ns.length), length: min(range.length, ns.length - min(range.location, ns.length)))
         var target = ns.paragraphRange(for: clamped)
+        // Paragraphs the edit touched are always restyled; neighbors pulled in only so list
+        // numbering stays right are skipped when they already look correct.
+        let edited = target
 
         // Widen backward and forward across neighboring list paragraphs.
         while target.location > 0, target.location < ns.length,
@@ -145,7 +196,8 @@ struct EditorStyler {
         var location = target.location
         while location < NSMaxRange(target) {
             let para = ns.paragraphRange(for: NSRange(location: location, length: 0))
-            var attrs = BlockAttributes(storage.attributes(at: para.location, effectiveRange: nil))
+            let current = storage.attributes(at: para.location, effectiveRange: nil)
+            var attrs = BlockAttributes(current)
 
             // The first paragraph is always the title; no other paragraph can be.
             if para.location == 0 { attrs.kind = .title } else if attrs.kind == .title { attrs.kind = .body }
@@ -163,9 +215,19 @@ struct EditorStyler {
                 counters.removeAll()
             }
 
-            applyParagraph(storage, range: para, attrs: attrs, ordinal: ordinal, decor: decor)
+            if NSIntersectionRange(para, edited).length > 0 || para.location == edited.location
+                || !isUpToDate(current, attrs: attrs, ordinal: ordinal, decor: decor) {
+                applyParagraph(storage, range: para, attrs: attrs, ordinal: ordinal, decor: decor)
+            }
             location = NSMaxRange(para)
         }
+    }
+
+    private func isUpToDate(_ current: [NSAttributedString.Key: Any], attrs: BlockAttributes, ordinal: Int, decor: DecorColors) -> Bool {
+        return BlockAttributes(current) == attrs
+            && (current[.notasOrdinal] as? Int ?? 0) == ordinal
+            && current[.notasDecor] as? DecorColors === decor
+            && (current[.paragraphStyle] as? NSParagraphStyle)?.isEqual(paragraphStyle(for: attrs)) == true
     }
 
     /// Style only the characters in `range`, using each paragraph's existing block attributes.
@@ -203,13 +265,12 @@ struct EditorStyler {
         }
 
         let done = attrs.kind == .checklist && attrs.checked
+        let c = colors
         let baseColor: NSColor = {
             switch attrs.kind {
-            case .title, .heading1, .heading2: return style.nsText
-            case .heading3: return style.nsText
-            case .quote: return style.nsSecondary
-            case .callout: return style.nsText
-            default: return style.nsSecondary
+            case .title, .heading1, .heading2, .heading3, .callout: return c.text
+            case .quote: return c.secondary
+            default: return c.secondary
             }
         }()
 
@@ -222,48 +283,50 @@ struct EditorStyler {
         }
 
         let dark = style.theme.isDark
+        // One batched add and only the removals that matter per run: each storage mutation is
+        // what costs, so this keeps loading and re-theming long notes quick.
         storage.enumerateAttributes(in: range) { attributes, r, _ in
             let marks = InlineMarks(rawValue: attributes[.notasMarks] as? Int ?? 0)
             let ink = (attributes[.notasInk] as? String).flatMap(InkColor.init(rawValue:))
             let highlightColor = (attributes[.notasHighlightColor] as? String).flatMap(InkColor.init(rawValue:))
             let inkColor = ink.map { NSColor(hex: dark ? $0.hex : $0.deepHex) }
-            var visual: [NSAttributedString.Key: Any] = [
+            var add: [NSAttributedString.Key: Any] = [
                 .font: font(for: attrs.kind, marks: marks),
-                .foregroundColor: done ? style.nsTertiary : (inkColor ?? baseColor),
+                .foregroundColor: done ? c.tertiary : (inkColor ?? baseColor),
             ]
-            if attrs.kind == .heading3 { visual[.kern] = 0.2 }
-            storage.addAttributes(visual, range: r)
+            var remove: [NSAttributedString.Key] = []
+            if attrs.kind == .heading3 { add[.kern] = 0.2 }
 
             if marks.contains(.underline) {
-                storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: r)
-                storage.addAttribute(.underlineColor, value: style.nsAccent, range: r)
-            } else {
-                storage.removeAttribute(.underlineStyle, range: r)
+                add[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                add[.underlineColor] = c.accent
+            } else if attributes[.underlineStyle] != nil {
+                remove.append(.underlineStyle)
             }
 
             if marks.contains(.strike) || done {
-                storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: r)
-                storage.addAttribute(.strikethroughColor, value: style.nsTertiary, range: r)
-            } else {
-                storage.removeAttribute(.strikethroughStyle, range: r)
+                add[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                add[.strikethroughColor] = c.tertiary
+            } else if attributes[.strikethroughStyle] != nil {
+                remove.append(.strikethroughStyle)
             }
 
             if marks.contains(.highlight) {
-                let base = highlightColor.map { NSColor(hex: $0.hex) } ?? style.nsAccent
-                storage.addAttribute(.backgroundColor, value: base.withAlphaComponent(dark ? 0.34 : 0.42), range: r)
-                if !done, inkColor == nil { storage.addAttribute(.foregroundColor, value: style.nsText, range: r) }
+                let base = highlightColor.map { NSColor(hex: $0.hex) } ?? c.accent
+                add[.backgroundColor] = base.withAlphaComponent(dark ? 0.34 : 0.42)
+                if !done, inkColor == nil { add[.foregroundColor] = c.text }
             } else if marks.contains(.code), attrs.kind != .code {
-                storage.addAttribute(.backgroundColor, value: style.nsSurface, range: r)
-                storage.addAttribute(.foregroundColor, value: style.nsAccent.mixed(with: style.nsText, 0.35), range: r)
-            } else {
-                storage.removeAttribute(.backgroundColor, range: r)
+                add[.backgroundColor] = c.surface
+                add[.foregroundColor] = c.accentOnText
+            } else if attributes[.backgroundColor] != nil {
+                remove.append(.backgroundColor)
             }
-        }
 
-        // Links keep the accent color with a subtle underline.
-        storage.enumerateAttribute(.link, in: range) { value, r, _ in
-            guard value != nil else { return }
-            storage.addAttribute(.foregroundColor, value: style.nsAccent, range: r)
+            // Links keep the accent color with a subtle underline.
+            if attributes[.link] != nil { add[.foregroundColor] = c.accent }
+
+            storage.addAttributes(add, range: r)
+            for key in remove { storage.removeAttribute(key, range: r) }
         }
     }
 

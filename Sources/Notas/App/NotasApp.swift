@@ -16,6 +16,11 @@ enum Entry {
             RunLoop.main.run()
             return
         }
+        if CommandLine.arguments.contains("--storage-stability") {
+            Task { @MainActor in exit(await StorageStabilityTests.run() ? 0 : 1) }
+            RunLoop.main.run()
+            return
+        }
         if CommandLine.arguments.contains("--self-test") {
             exit(SelfTest.run() ? 0 : 1)
         }

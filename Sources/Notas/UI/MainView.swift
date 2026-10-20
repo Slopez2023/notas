@@ -6,6 +6,46 @@ struct MainView: View {
 
     var body: some View {
         let style = app.chromeStyle
+        HStack(spacing: 0) {
+            workspace(style)
+            if app.isChatOpen {
+                Rectangle().fill(style.secondary.opacity(0.18)).frame(width: 1)
+                Group {
+                    if let id = app.activeNoteID {
+                        NoteChatSidebar(noteID: id).id(id)
+                    } else {
+                        Text("Open a note to start a conversation.")
+                            .foregroundStyle(style.secondary).padding(24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    }
+                }
+                .frame(width: 350)
+                .padding(.top, 38)
+                .background(style.background)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .ignoresSafeArea()
+        .animation(.snappy(duration: 0.25), value: app.isChatOpen)
+        .preferredColorScheme(style.colorScheme)
+        .tint(style.accentColor)
+        .animation(.easeInOut(duration: 0.3), value: style)
+        .animation(.snappy(duration: 0.2), value: app.isPaletteOpen)
+        .alert("A shared note couldn't be imported", isPresented: Binding(get: { app.captureImportError != nil }, set: { if !$0 { app.captureImportError = nil } })) {
+            Button("Retry") { DispatchQueue.main.async { app.retrySharedCaptures?() } }
+            Button("Later", role: .cancel) { app.captureImportError = nil }
+        } message: {
+            Text((app.captureImportError ?? "") + " The captured items are still saved in your inbox.")
+        }
+        .onAppear {
+            app.showMainWindow = { openWindow(id: "main") }
+        }
+        .onChange(of: app.chromeStyle) { app.refreshWidgets?() }
+        .onChange(of: app.store.notes.count) { app.pruneTabs() }
+        .onChange(of: app.isStylePanelOpen) { _, open in if !open { app.focusEditorSoon() } }
+    }
+
+    private func workspace(_ style: ResolvedStyle) -> some View {
         ZStack(alignment: .topLeading) {
             style.background
 
@@ -62,23 +102,6 @@ struct MainView: View {
                     .zIndex(3)
             }
         }
-        .ignoresSafeArea()
-        .preferredColorScheme(style.colorScheme)
-        .tint(style.accentColor)
-        .animation(.easeInOut(duration: 0.3), value: style)
-        .animation(.snappy(duration: 0.2), value: app.isPaletteOpen)
-        .alert("A shared note couldn't be imported", isPresented: Binding(get: { app.captureImportError != nil }, set: { if !$0 { app.captureImportError = nil } })) {
-            Button("Retry") { DispatchQueue.main.async { app.retrySharedCaptures?() } }
-            Button("Later", role: .cancel) { app.captureImportError = nil }
-        } message: {
-            Text((app.captureImportError ?? "") + " The captured items are still saved in your inbox.")
-        }
-        .onAppear {
-            app.showMainWindow = { openWindow(id: "main") }
-        }
-        .onChange(of: app.chromeStyle) { app.refreshWidgets?() }
-        .onChange(of: app.store.notes.count) { app.pruneTabs() }
-        .onChange(of: app.isStylePanelOpen) { _, open in if !open { app.focusEditorSoon() } }
     }
 }
 

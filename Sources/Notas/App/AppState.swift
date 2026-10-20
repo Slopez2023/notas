@@ -25,7 +25,17 @@ final class AppState {
     private(set) var activeNoteID: UUID?
     var drawer: DrawerContent?
     var isPaletteOpen = false
-    var isStylePanelOpen = false
+    enum RightPanel { case closed, style, chat }
+    var rightPanel = RightPanel.closed
+    var isStylePanelOpen: Bool {
+        get { rightPanel == .style }
+        set { if newValue { rightPanel = .style } else if rightPanel == .style { rightPanel = .closed } }
+    }
+    var isChatOpen: Bool {
+        get { rightPanel == .chat }
+        set { if newValue { rightPanel = .chat } else if rightPanel == .chat { rightPanel = .closed } }
+    }
+    @ObservationIgnored lazy var noteAssistant = NoteAssistant(app: self)
     var captureImportError: String?
 
     var appearance: AppearanceSetting {
@@ -204,6 +214,7 @@ final class AppState {
     }
 
     func delete(_ id: UUID) {
+        noteAssistant.deleteNote(id)
         store.trash(id)
         if let i = tabs.firstIndex(of: id) {
             tabs.remove(at: i)

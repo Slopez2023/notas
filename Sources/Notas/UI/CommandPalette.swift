@@ -227,6 +227,9 @@ struct CommandPalette: View {
             PaletteItem(id: "look", icon: .symbol("textformat"), title: "Customize look", shortcut: "⌥⌘L") {
                 withAnimation(.snappy(duration: 0.25)) { app.isStylePanelOpen = true }
             },
+            PaletteItem(id: "chat", icon: .symbol("bubble.left.and.text.bubble.right"), title: "Chat about this note", shortcut: "⌥⌘J") {
+                app.isChatOpen = true
+            },
             PaletteItem(id: "all", icon: .symbol("square.grid.2x2"), title: "Browse all notes", shortcut: "⇧⌘A") { app.toggleDrawer(.all) },
             PaletteItem(id: "notebook-new", icon: .symbol("plus.circle"), title: "New notebook", shortcut: nil) { newNotebookPrompt() },
         ]

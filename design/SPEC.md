@@ -18,7 +18,7 @@ Mockups: `concepts-v2.html` (the three directions), `concept-v3.html` (chosen di
 | Per-note themes | 8–10 curated presets (Midnight, Paper, Terminal, Blush, Sage, Ink, …), each adjustable per note: accent, title/body font, size, spacing, width. |
 | Rich styling | Highlighter and text colors, callouts, quotes, dividers, two-column blocks. |
 | Core blocks | Text, checklist, photo gallery, simple sketch (pen / highlighter / eraser with trackpad or mouse), document scan (Continuity Camera from her iPhone), table, board (any list → kanban). |
-| AI | On-device only (Apple Foundation Models): tidy up, turn into checklist, summarize, make a table, find related. Free, private, works offline. |
+| AI | On-device by default (Apple Foundation Models): tidy up, turn into checklist, summarize, make a table, find related. Free, private, works offline. An opt-in, per-note chat assistant using the user's ChatGPT subscription via the Codex CLI sends the selected note to OpenAI; see [`NOTE_ASSISTANT.md`](NOTE_ASSISTANT.md). |
 | Capture | Global hotkey window (⌥Space), desktop/Notification Center widgets, share extension. |
 | Sharing | Export a note as a styled image (story 9:16 / square) or PDF in its theme. No live sharing. |
 | Sync/storage | Notes saved as files in her iCloud Drive folder, so they're backed up and visible on any of her Macs. No CloudKit (needs the paid account). |

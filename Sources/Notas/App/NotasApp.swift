@@ -8,6 +8,14 @@ import NotasShared
 enum Entry {
     static func main() {
         #if DEBUG
+        if CommandLine.arguments.contains("--assistant-test") || CommandLine.arguments.contains("--check-codex") {
+            Task { @MainActor in
+                let success = await AssistantSelfTest.run(realCodex: CommandLine.arguments.contains("--check-codex"))
+                exit(success ? 0 : 1)
+            }
+            RunLoop.main.run()
+            return
+        }
         if CommandLine.arguments.contains("--self-test") {
             exit(SelfTest.run() ? 0 : 1)
         }
@@ -106,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        app.noteAssistant.shutdown()
         app.activeEditor.map { app.store.updateDocument(app.activeNoteID ?? UUID(), $0.document) }
         quickCapture?.model.saveDraft()
         integration?.publishNow()
@@ -235,6 +244,9 @@ struct NotasCommands: Commands {
         }
 
         CommandGroup(after: .toolbar) {
+            Button("Chat About This Note") { app.isChatOpen.toggle() }
+                .keyboardShortcut("j", modifiers: [.command, .option])
+                .disabled(app.activeNoteID == nil)
             Button("Customize Look") {
                 withAnimation(.snappy(duration: 0.25)) { app.isStylePanelOpen.toggle() }
             }

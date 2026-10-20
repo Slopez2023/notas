@@ -12,6 +12,9 @@ struct TopBar: View {
             TabStrip(style: style)
             Spacer(minLength: 8)
             HStack(spacing: 6) {
+                BarButton(label: "Chat", help: "Chat about this note (⌥⌘J)", isOn: app.isChatOpen, style: style) {
+                    withAnimation(.snappy(duration: 0.25)) { app.isChatOpen.toggle() }
+                }
                 ShareBarButton(app: app, style: style)
                     .frame(width: 66, height: 26)
                 BarButton(label: "Aa", help: "Customize this note's look (⌥⌘L)", isOn: app.isStylePanelOpen, style: style) {
@@ -21,7 +24,7 @@ struct TopBar: View {
                     app.isPaletteOpen = true
                 }
             }
-            .frame(width: 160, alignment: .trailing)
+            .frame(width: 210, alignment: .trailing)
         }
         .padding(.horizontal, 12)
         .padding(.top, 3)

@@ -9,6 +9,7 @@ struct Note: Codable, Identifiable, Equatable {
     var pinned: Bool
     var style: NoteStyle
     var document: NoteDocument
+    var retainsEmptyDocument: Bool? = nil
 
     var title: String { document.title }
     var displayTitle: String { title.isEmpty ? "Untitled" : title }

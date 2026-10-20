@@ -70,7 +70,7 @@ final class LibraryStore {
         searchIndex.removeAll()
 
         // Notes that were opened but never written in aren't worth keeping.
-        for (id, note) in notes where note.document.isEmpty && note.tags.isEmpty {
+        for (id, note) in notes where note.document.isEmpty && note.tags.isEmpty && note.retainsEmptyDocument != true {
             trash(id)
         }
 
@@ -229,7 +229,7 @@ final class LibraryStore {
     /// Drops a note that was created but never written in. Keeps the library free of blank notes.
     func discardIfEmpty(_ id: UUID) {
         guard let note = notes[id], note.document.isEmpty,
-              note.tags.isEmpty else { return }
+              note.tags.isEmpty, note.retainsEmptyDocument != true else { return }
         trash(id)
     }
 

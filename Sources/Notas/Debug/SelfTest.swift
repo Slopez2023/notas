@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import SwiftUI
 import PDFKit
 import Carbon
 #if canImport(NotasShared)
@@ -20,6 +21,7 @@ enum SelfTest {
         phase2()
         store()
         phase3()
+        resizing()
         phase4()
         sharing()
         print(failures == 0 ? "✓ \(passes) checks passed" : "✗ \(failures) failed, \(passes) passed")
@@ -439,6 +441,114 @@ enum SelfTest {
             check(target.document.blocks.filter { $0.kind == .gallery }.last?.payload?.images?.count == 2, "multi-page scan keeps every page")
         } catch { check(false, "asset pipeline: \(error)") }
         window.orderOut(nil)
+    }
+
+    private static func resizing() {
+        let tv = makeEditor([
+            Block(kind: .title, runs: [InlineRun(text: "Resize")]),
+            Block(kind: .table, runs: [], payload: .empty(for: .table)),
+            Block(kind: .sketch, runs: [], payload: BlockPayload(sketch: SketchData(width: 640, height: 260, strokes: [
+                SketchStroke(tool: .pen, color: 0x9381FF, size: 4, points: [40, 40, 320, 220, 600, 40])
+            ]))),
+            Block(kind: .body, runs: [InlineRun(text: "After the blocks")])
+        ])
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 900),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let scroll = NSScrollView(frame: window.contentView!.bounds)
+        scroll.backgroundColor = tv.styler.style.nsBackground
+        scroll.documentView = tv
+        window.contentView = scroll
+        let original = tv.document
+        let snapshots = ProcessInfo.processInfo.environment["NOTAS_RESIZE_SNAPSHOTS"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if let snapshots { try? FileManager.default.createDirectory(at: snapshots, withIntermediateDirectories: true) }
+        for width in [1000, 760, 900, 780, 1180, 760] {
+            window.setContentSize(NSSize(width: width, height: 900))
+            window.contentView?.layoutSubtreeIfNeeded()
+            let expectedWidth = min(720, CGFloat(width) - 152)
+            for host in tv.richBlockHosts.values {
+                check(abs(host.frame.width - expectedWidth) < 1,
+                      "rich block fills note at window width \(width), got \(host.frame)")
+                check(abs(host.frame.minX - floor((CGFloat(width) - expectedWidth) / 2)) < 1,
+                      "rich block stays aligned with text at window width \(width), got \(host.frame)")
+                if host.rootView.state.kind == .table {
+                    func fields(in view: NSView) -> [NSTextField] {
+                        (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields(in: $0) }
+                    }
+                    let cell = fields(in: host).first { $0.accessibilityLabel() == "Row 1, column 1" }
+                    check(cell != nil && abs(cell!.alignmentRect(forFrame: cell!.frame).width - ((expectedWidth - 30) / 3 - 20)) < 1,
+                          "table cells reflow in the same layout pass at window width \(width), got \(cell?.frame.width ?? -1)")
+                }
+            }
+            if let snapshots, let bitmap = scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds) {
+                scroll.cacheDisplay(in: scroll.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: snapshots.appendingPathComponent("editor-\(width).png"))
+            }
+        }
+        check(tv.document == original, "resizing preserves table and sketch content")
+
+        tv.load(NoteDocument(blocks: [
+            Block(kind: .title, runs: [InlineRun(text: "Long note")]),
+            Block(kind: .table, runs: [], payload: .empty(for: .table))
+        ] + (0..<200).map { Block(kind: .body, runs: [InlineRun(text: "Paragraph \($0)")]) } + [
+            Block(kind: .sketch, runs: [], payload: .empty(for: .sketch))
+        ]))
+        tv.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        tv.layoutSubtreeIfNeeded()
+        let tableHost = tv.richBlockHosts.values.first { $0.rootView.state.kind == .table }!
+        let sketchHost = tv.richBlockHosts.values.first { $0.rootView.state.kind == .sketch }!
+        check(!tableHost.isHidden && sketchHost.isHidden, "long note mounts visible table and hides offscreen sketch")
+        tv.scrollRangeToVisible(NSRange(location: (tv.string as NSString).length - 1, length: 1))
+        tv.layoutSubtreeIfNeeded()
+        check(!sketchHost.isHidden && tableHost.isHidden, "scrolling reveals sketch and hides offscreen table")
+        window.setContentSize(NSSize(width: 900, height: 900))
+        window.contentView?.layoutSubtreeIfNeeded()
+        check(!sketchHost.isHidden && abs(sketchHost.frame.width - 720) < 1,
+              "offscreen sketch uses current note width when scrolled into view and resized")
+        tv.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        tv.layoutSubtreeIfNeeded()
+        check(!tableHost.isHidden && abs(tableHost.frame.width - 720) < 1,
+              "scrolling back restores the table at current note width")
+        window.close()
+        if let snapshots { capturePanels(in: snapshots, document: original) }
+    }
+
+    private static func capturePanels(in snapshots: URL, document: NoteDocument) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notas-resize-\(UUID().uuidString)")
+        let suite = "com.stephenlopez.notas.resize.\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        let store = LibraryStore(rootURL: root)
+        store.load()
+        let app = AppState(store: store, preferences: preferences)
+        app.appearance = .dark
+        let note = store.createNote(in: nil)
+        store.updateDocument(note.id, document)
+        app.open(note.id)
+        let host = NSHostingView(rootView: MainView().environment(app))
+        host.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 800),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        for (name, width, drawer, panel) in [
+            ("drawer-wide", 1180, true, false), ("drawer-narrow", 760, true, false),
+            ("style-narrow", 760, false, true), ("style-wide", 1180, false, true),
+            ("closed", 760, false, false)
+        ] {
+            app.drawer = drawer ? .all : nil
+            app.isStylePanelOpen = panel
+            window.setContentSize(NSSize(width: width, height: 800))
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.35))
+            host.layoutSubtreeIfNeeded()
+            if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: snapshots.appendingPathComponent("\(name).png"))
+            }
+        }
+        window.close()
+        store.flush()
+        preferences.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
     }
 
     private static func phase4() {

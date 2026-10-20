@@ -92,8 +92,10 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
     // MARK: Layout
 
     override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = frame.width != newSize.width
         super.setFrameSize(newSize)
         updateInsets()
+        if widthChanged { needsLayout = true }
     }
 
     private var contentWidth: CGFloat {

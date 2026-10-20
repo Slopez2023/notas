@@ -8,8 +8,13 @@ extension NotasTextView {
               let manager = textLayoutManager, let content = textContentStorage else { return }
         isPositioningRichBlocks = true
         defer { isPositioningRichBlocks = false }
-        manager.ensureLayout(for: manager.documentRange)
-        manager.enumerateTextLayoutFragments(from: manager.documentRange.location, options: []) { fragment in
+        manager.textViewportLayoutController.layoutViewport()
+        // Keep resize work within the viewport, even when the note is much longer.
+        let range = manager.textViewportLayoutController.viewportRange ?? manager.documentRange
+        manager.ensureLayout(for: range)
+        var visible = Set<ObjectIdentifier>()
+        manager.enumerateTextLayoutFragments(from: range.location, options: []) { fragment in
+            guard fragment.rangeInElement.location.compare(range.endLocation) == .orderedAscending else { return false }
             let offset = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
             guard offset >= 0, offset < self.textStorage?.length ?? 0,
                   let attachment = self.textStorage?.attribute(.attachment, at: offset, effectiveRange: nil) as? RichBlockAttachment,
@@ -17,9 +22,15 @@ extension NotasTextView {
             let rect = fragment.frameForTextAttachment(at: fragment.rangeInElement.location)
             let frame = rect.offsetBy(dx: fragment.layoutFragmentFrame.minX + self.textContainerOrigin.x,
                                       dy: fragment.layoutFragmentFrame.minY + self.textContainerOrigin.y)
-            if host.frame != frame { host.frame = frame }
+            visible.insert(ObjectIdentifier(attachment))
+            if host.isHidden { host.isHidden = false }
+            if host.frame != frame {
+                host.frame = frame
+                host.layoutSubtreeIfNeeded()
+            }
             return true
         }
+        for (id, host) in richBlockHosts where !visible.contains(id) && !host.isHidden { host.isHidden = true }
     }
 
     func connectRichBlocks() {
@@ -33,6 +44,8 @@ extension NotasTextView {
             if self.richBlockHosts[id] == nil {
                 let host = NSHostingView(rootView: RichBlockView(attachment: attachment, state: attachment.state))
                 host.sizingOptions = []
+                host.safeAreaRegions = []
+                host.clipsToBounds = true
                 self.richBlockHosts[id] = host
                 self.addSubview(host)
             }

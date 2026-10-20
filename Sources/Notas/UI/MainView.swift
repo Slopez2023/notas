@@ -23,29 +23,43 @@ struct MainView: View {
                 .padding(.leading, 12)
                 .frame(maxHeight: .infinity, alignment: .center)
 
-            if let drawer = app.drawer {
-                Color.black.opacity(0.001)
-                    .onTapGesture { withAnimation(.snappy(duration: 0.25)) { app.drawer = nil } }
-                NotebookDrawer(content: drawer)
-                    .padding(.leading, 56)
-                    .padding(.top, 46)
-                    .padding(.bottom, 14)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-                    .id(drawerKey(drawer))
+            ZStack(alignment: .topLeading) {
+                if let drawer = app.drawer {
+                    Color.black.opacity(0.001)
+                        .onTapGesture { app.drawer = nil }
+                        .transition(.opacity)
+                    NotebookDrawer(content: drawer)
+                        .padding(.leading, 56)
+                        .padding(.top, 46)
+                        .padding(.bottom, 14)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                        .zIndex(1)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .allowsHitTesting(app.drawer != nil)
+            .animation(.snappy(duration: 0.25), value: app.drawer)
+            .zIndex(1)
 
-            if app.isStylePanelOpen {
-                StylePanel()
-                    .padding(.top, 46)
-                    .padding(.trailing, 12)
-                    .padding(.bottom, 14)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            ZStack(alignment: .topTrailing) {
+                if app.isStylePanelOpen {
+                    StylePanel()
+                        .padding(.top, 46)
+                        .padding(.trailing, 12)
+                        .padding(.bottom, 14)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                        .zIndex(1)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .allowsHitTesting(app.isStylePanelOpen)
+            .animation(.snappy(duration: 0.25), value: app.isStylePanelOpen)
+            .zIndex(2)
 
             if app.isPaletteOpen {
                 CommandPalette()
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+                    .zIndex(3)
             }
         }
         .ignoresSafeArea()
@@ -65,15 +79,6 @@ struct MainView: View {
         .onChange(of: app.chromeStyle) { app.refreshWidgets?() }
         .onChange(of: app.store.notes.count) { app.pruneTabs() }
         .onChange(of: app.isStylePanelOpen) { _, open in if !open { app.focusEditorSoon() } }
-    }
-
-    private func drawerKey(_ d: DrawerContent) -> String {
-        switch d {
-        case .all: "all"
-        case .pinned: "pinned"
-        case .notebook(let id): id.uuidString
-        case .tag(let t): "tag-\(t)"
-        }
     }
 }
 

@@ -1,0 +1,199 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --sys: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; --serif: ui-serif, "New York", Georgia, serif; --round: ui-rounded, "SF Pro Rounded", -apple-system, sans-serif; --mono: ui-monospace, "SF Mono", Menlo, monospace; }
+  body { margin: 0; font-family: var(--sys); color: var(--foreground); -webkit-font-smoothing: antialiased; }
+  .head { display: flex; align-items: baseline; gap: 10px; margin: 34px 0 4px; }
+  .head:first-child { margin-top: 0; }
+  .num { font-family: var(--mono); font-size: 12px; color: var(--muted-foreground); }
+  .head h2 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+  .head .pick { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--primary); color: var(--primary-foreground); }
+  .sub { font-size: 13px; color: var(--muted-foreground); margin: 0 0 12px; line-height: 1.45; }
+  .desk { padding: 20px; border-radius: var(--radius); }
+  .win { border-radius: 14px; overflow: hidden; height: 400px; position: relative; box-shadow: 0 0 0 .5px rgba(0,0,0,.2), 0 24px 50px -16px rgba(0,0,0,.4); }
+  .lights { position: absolute; top: 12px; left: 14px; display: flex; gap: 7px; z-index: 5; }
+  .lights i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .pros { display: flex; gap: 18px; font-size: 12.5px; margin-top: 10px; color: var(--muted-foreground); flex-wrap: wrap; }
+  .pros b { color: var(--foreground); font-weight: 600; }
+
+  /* ---------- 1. SHELF ---------- */
+  .d1 { background: linear-gradient(160deg, #e7dccb, #d8c6ad); }
+  .w1 { background: #f4ede1; color: #3b2f25; display: grid; grid-template-rows: 118px 1fr; }
+  .shelf { display: flex; align-items: flex-end; gap: 5px; padding: 0 22px 0 90px; border-bottom: 7px solid #b48a62; box-shadow: 0 6px 10px -6px rgba(80,50,20,.4); background: linear-gradient(#efe5d5, #e9dcc8); }
+  .spine { width: 30px; border-radius: 3px 3px 0 0; display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; transform: rotate(180deg); font-family: var(--serif); font-size: 11.5px; font-weight: 600; color: rgba(255,255,255,.92); letter-spacing: .04em; box-shadow: inset -3px 0 0 rgba(0,0,0,.08), inset 2px 0 0 rgba(255,255,255,.18); }
+  .spine.out { transform: rotate(180deg) translateY(14px); box-shadow: 0 8px 14px rgba(0,0,0,.25), inset -3px 0 0 rgba(0,0,0,.08); }
+  .spread { display: grid; grid-template-columns: 1fr 1.5fr; margin: 18px 40px 0; background: #fffaf1; border-radius: 4px 4px 0 0; box-shadow: 0 0 0 .5px rgba(0,0,0,.12), 0 10px 24px -8px rgba(80,50,20,.35); position: relative; }
+  .spread::after { content: ""; position: absolute; left: 40%; top: 0; bottom: 0; width: 22px; transform: translateX(-11px); background: linear-gradient(90deg, transparent, rgba(0,0,0,.07), transparent); }
+  .lp { padding: 20px 22px; border-right: .5px solid rgba(0,0,0,.06); }
+  .lp h4 { font-family: var(--serif); font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #a0693f; margin: 0 0 12px; }
+  .toc { display: flex; font-family: var(--serif); font-size: 13.5px; padding: 5px 0; color: #4a3b2e; }
+  .toc span { flex: 1; border-bottom: 1px dotted #cdbba3; margin: 0 6px 4px; }
+  .toc.on { color: #a0693f; font-weight: 600; }
+  .rp { padding: 20px 26px; background-image: radial-gradient(#e2d4bf 1px, transparent 1px); background-size: 16px 16px; background-position: 8px 8px; }
+  .rp h3 { font-family: var(--serif); font-size: 24px; margin: 0 0 8px; font-weight: 600; }
+  .rp p { font-family: var(--serif); font-size: 14.5px; line-height: 1.7; margin: 0 0 8px; }
+  .tape { position: absolute; right: 34px; top: -8px; width: 70px; height: 18px; background: rgba(240,200,120,.6); transform: rotate(4deg); }
+  .corner { position: absolute; right: 0; bottom: 0; width: 26px; height: 26px; background: linear-gradient(135deg, #fffaf1 50%, #e6d7c0 50%); box-shadow: -2px -2px 4px rgba(0,0,0,.06); }
+
+  /* ---------- 2. STREAM ---------- */
+  .d2 { background: radial-gradient(circle at 20% 10%, #3a2d5c, #121018 60%); }
+  .w2 { background: #141317; color: #ece9f2; }
+  .chips { position: absolute; top: 10px; left: 0; right: 0; display: flex; justify-content: center; gap: 6px; }
+  .chip { font-size: 11.5px; padding: 4px 10px; border-radius: 99px; background: #222029; color: #a9a3b8; }
+  .chip.on { background: #c7f36b; color: #1a1d10; font-weight: 600; }
+  .stream { position: absolute; top: 46px; bottom: 64px; left: 0; right: 0; overflow: hidden; display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 4px; mask-image: linear-gradient(transparent, #000 14%, #000 100%); }
+  .day { width: 400px; font-size: 11px; font-weight: 600; color: #6f6980; letter-spacing: .08em; text-transform: uppercase; margin-top: 6px; }
+  .post { width: 400px; box-sizing: border-box; background: #1d1b22; border-radius: 14px; padding: 11px 14px; font-size: 13.5px; line-height: 1.45; border: 1px solid #27242e; }
+  .post .t { font-size: 11px; color: #6f6980; float: right; }
+  .post .h { color: #c7f36b; font-size: 12px; }
+  .post .ck { display: flex; gap: 8px; align-items: center; margin-top: 4px; color: #cfc9da; }
+  .post .ck i { width: 12px; height: 12px; border-radius: 4px; border: 1.5px solid #6f6980; }
+  .post .ck.done i { background: #c7f36b; border-color: #c7f36b; }
+  .post .ck.done { color: #6f6980; text-decoration: line-through; }
+  .imgs { display: flex; gap: 6px; margin-top: 8px; }
+  .imgs i { flex: 1; height: 54px; border-radius: 8px; display: block; }
+  .compose { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); width: 420px; box-sizing: border-box; background: #232129; border: 1px solid #34303d; border-radius: 16px; padding: 10px 12px 10px 16px; display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: #7d778c; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+  .compose .go { margin-left: auto; width: 26px; height: 26px; border-radius: 9px; background: #c7f36b; color: #1a1d10; display: grid; place-items: center; font-weight: 700; font-size: 13px; }
+  .scrub { position: absolute; right: 14px; top: 60px; bottom: 80px; display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: #4f4a5c; text-align: right; }
+  .scrub b { color: #c7f36b; font-weight: 600; }
+
+  /* ---------- 3. PAGE ---------- */
+  .d3 { background: linear-gradient(135deg, #dfe6e3, #ecebe6 50%, #e6e1ea); }
+  .w3 { background: #fdfdfc; color: #1c1c1e; }
+  .rail { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; align-items: center; padding: 10px 7px; border-radius: 99px; background: #f4f4f2; }
+  .rail i { width: 9px; height: 9px; border-radius: 50%; display: block; }
+  .rail i.on { box-shadow: 0 0 0 3px #f4f4f2, 0 0 0 4.5px currentColor; }
+  .rail .plus { font-size: 13px; color: #a5a5a0; line-height: 1; margin-top: 2px; }
+  .tabs { position: absolute; top: 9px; left: 0; right: 0; display: flex; justify-content: center; gap: 4px; }
+  .tab { font-size: 12px; padding: 4px 11px; border-radius: 8px; color: #8d8d88; }
+  .tab.on { background: #f1f1ef; color: #1c1c1e; font-weight: 500; }
+  .kbd3 { position: absolute; top: 10px; right: 14px; font-size: 11px; color: #a5a5a0; }
+  .kbd3 kbd, .mini kbd { font-family: var(--sys); font-size: 10.5px; border: .5px solid #d8d8d4; border-radius: 4px; padding: 0 4px; background: #fff; color: #6e6e69; }
+  .doc { position: absolute; top: 58px; left: 50%; transform: translateX(-50%); width: 400px; }
+  .crumb { font-size: 11.5px; color: #a5a5a0; margin-bottom: 6px; }
+  .crumb i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #e0806a; margin-right: 5px; }
+  .doc h1 { font-size: 26px; font-weight: 680; letter-spacing: -.02em; margin: 0 0 10px; }
+  .doc p { font-size: 14.5px; line-height: 1.65; color: #3a3a38; margin: 0 0 10px; }
+  .pill { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; padding: 1px 7px; border-radius: 6px; vertical-align: 1px; }
+  .pill.link { background: #eef3f1; color: #3d7a68; }
+  .pill.when { background: #fbf0e8; color: #b5603f; }
+  .c3 { display: flex; gap: 10px; align-items: center; font-size: 14.5px; color: #3a3a38; margin: 5px 0; }
+  .c3 i { width: 15px; height: 15px; border-radius: 5px; border: 1.5px solid #c9c9c4; flex: none; }
+  .c3.done i { background: #1c1c1e; border-color: #1c1c1e; }
+  .c3.done span { color: #b5b5b0; text-decoration: line-through; }
+  .ph { display: flex; gap: 6px; margin-top: 10px; }
+  .ph i { height: 64px; flex: 1; border-radius: 8px; display: block; }
+  .foot3 { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; font-size: 11px; color: #c1c1bc; }
+
+  .minis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+  .mini { border-radius: var(--radius); background: #f7f7f5; padding: 16px; color: #1c1c1e; font-size: 12px; min-height: 150px; box-sizing: border-box; }
+  .mini .lab { font-size: 11px; font-weight: 600; color: #8d8d88; margin-bottom: 10px; display: flex; justify-content: space-between; }
+  .pal { background: #fff; border-radius: 10px; box-shadow: 0 0 0 .5px rgba(0,0,0,.08), 0 8px 20px -8px rgba(0,0,0,.2); padding: 6px; }
+  .pal .q { padding: 6px 8px; font-size: 12.5px; border-bottom: .5px solid #eee; margin-bottom: 4px; }
+  .pal .r { padding: 5px 8px; border-radius: 6px; display: flex; justify-content: space-between; color: #4a4a47; }
+  .pal .r.on { background: #f1f1ef; color: #1c1c1e; }
+  .pal .r small { color: #a5a5a0; }
+  .exp { display: flex; flex-direction: column; gap: 3px; background: #fff; border-radius: 12px; padding: 8px; box-shadow: 0 0 0 .5px rgba(0,0,0,.08), 0 8px 20px -8px rgba(0,0,0,.2); width: 150px; }
+  .exp div { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; }
+  .exp div.on { background: #f1f1ef; }
+  .exp i { width: 8px; height: 8px; border-radius: 50%; display: block; }
+  .exp small { margin-left: auto; color: #a5a5a0; }
+</style>
+</head>
+<body>
+
+<!-- 1 -->
+<div class="head"><span class="num">01</span><h2>Shelf</h2></div>
+<p class="sub">Feels like something you can hold. Notebooks sit on a shelf as book spines in her own colors. Open one and you get a two-page spread: a table of contents on the left, the note on dotted paper on the right. The page corner turns when you flip.</p>
+<div class="desk d1">
+  <div class="win w1">
+    <div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+    <div class="shelf">
+      <div class="spine" style="height:82px;background:#c46a5a">Us</div>
+      <div class="spine out" style="height:94px;background:#7a9a6d">Recipes</div>
+      <div class="spine" style="height:74px;background:#5b7aa6">School</div>
+      <div class="spine" style="height:88px;background:#d4a24c">Ideas</div>
+      <div class="spine" style="height:70px;background:#8c6a9e">Journal</div>
+      <div class="spine" style="height:80px;background:#6b5446">Books</div>
+      <div class="spine" style="height:60px;background:transparent;border:1.5px dashed #c5ae8f;color:#b39a7a;box-shadow:none">+ New</div>
+    </div>
+    <div class="spread">
+      <div class="tape"></div>
+      <div class="lp">
+        <h4>Recipes</h4>
+        <div class="toc on">Sunday pasta<span></span>1</div>
+        <div class="toc">Mom's flan<span></span>2</div>
+        <div class="toc">Green curry<span></span>3</div>
+        <div class="toc">Sourdough log<span></span>4</div>
+        <div class="toc">Cookie dough ratio<span></span>5</div>
+      </div>
+      <div class="rp">
+        <h3>Sunday pasta</h3>
+        <p>Brown the butter until it smells like hazelnuts, then throw in the sage. A lot of parmesan. Save a cup of pasta water.</p>
+        <p style="color:#a0693f">♡ she likes it with lemon zest</p>
+      </div>
+      <div class="corner"></div>
+    </div>
+  </div>
+</div>
+<div class="pros"><span><b>Feels like:</b> cozy, personal, a gift</span><span><b>Best for:</b> recipes, journals, collections</span><span><b>Trade-off:</b> slower for quick jots</span></div>
+
+<!-- 2 -->
+<div class="head"><span class="num">02</span><h2>Stream</h2></div>
+<p class="sub">No folders. Everything is one timeline, a bit like texting yourself. Type in the bar at the bottom and press ⏎, and it lands under Today. #tags turn into filter chips across the top. Photos, checklists, and links all show right in the feed.</p>
+<div class="desk d2">
+  <div class="win w2">
+    <div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+    <div class="chips"><span class="chip on">All</span><span class="chip">#us</span><span class="chip">#recipes</span><span class="chip">☐ To-dos</span><span class="chip">◫ Photos</span></div>
+    <div class="stream">
+      <div class="day">Yesterday</div>
+      <div class="post"><span class="t">21:04</span>That ceramic mug from the Saturday market, the speckled blue one <span class="h">#gifts</span></div>
+      <div class="day">Today</div>
+      <div class="post"><span class="t">09:12</span>Lisbon <span class="h">#us</span>
+        <div class="ck done"><i></i>Book the flights</div>
+        <div class="ck"><i></i>Dinner at sunset, miradouro</div></div>
+      <div class="post"><span class="t">10:40</span>Mood board for the apartment
+        <div class="imgs"><i style="background:linear-gradient(135deg,#d9b48f,#a8735a)"></i><i style="background:linear-gradient(135deg,#9fb5a0,#5d7a6a)"></i><i style="background:linear-gradient(135deg,#e8d5c4,#c4a48a)"></i></div></div>
+    </div>
+    <div class="scrub"><span>Jul</span><span>Aug</span><span>Sep</span><b>Oct ●</b></div>
+    <div class="compose">Write something…<span style="color:#4f4a5c">#  ☐  ◫</span><span class="go">↑</span></div>
+  </div>
+</div>
+<div class="pros"><span><b>Feels like:</b> fast, modern, nothing to organize</span><span><b>Best for:</b> brain dumps, daily life</span><span><b>Trade-off:</b> long documents feel cramped</span></div>
+
+<!-- 3 -->
+<div class="head"><span class="num">03</span><h2>Page</h2><span class="pick">My pick</span></div>
+<p class="sub">Nothing on screen but the note. Notebooks shrink to a row of colored dots on the left. Open notes sit in quiet tabs across the top. Every feature is there, just tucked behind <b>⌘K</b>, <b>/</b>, and hover until she reaches for it. It looks as simple as a blank page but does as much as Craft.</p>
+<div class="desk d3">
+  <div class="win w3">
+    <div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+    <div class="tabs"><span class="tab on">Lisbon trip</span><span class="tab">Sunday pasta</span><span class="tab">Gift ideas</span></div>
+    <div class="kbd3"><kbd>⌘</kbd><kbd>K</kbd></div>
+    <div class="rail">
+      <i class="on" style="background:#e0806a;color:#e0806a"></i><i style="background:#7fae8e"></i><i style="background:#7d97c9"></i><i style="background:#e3b456"></i><i style="background:#a98bbf"></i><span class="plus">+</span>
+    </div>
+    <div class="doc">
+      <div class="crumb"><i></i>Us</div>
+      <h1>Lisbon trip</h1>
+      <p>Pastéis at Manteigaria first, then the tram up to Alfama. Bring the list from <span class="pill link">↗ Gift ideas</span> for the market. Book dinner by <span class="pill when">⏰ Fri 7pm</span>.</p>
+      <div class="c3 done"><i></i><span>Book the flights</span></div>
+      <div class="c3"><i></i><span>Find a place near Príncipe Real</span></div>
+      <div class="ph"><i style="background:linear-gradient(135deg,#f0c7a8,#d98d6c)"></i><i style="background:linear-gradient(135deg,#bcd3e6,#6f94b8)"></i><i style="background:linear-gradient(135deg,#f3e1b5,#d9b45e)"></i></div>
+    </div>
+    <div class="foot3">142 words · saved</div>
+  </div>
+</div>
+<div class="minis">
+  <div class="mini"><div class="lab">⌘K · search, jump, create</div>
+    <div class="pal"><div class="q">lis▏</div><div class="r on">Lisbon trip <small>Us</small></div><div class="r">Lisbon packing list <small>Us</small></div><div class="r">New note "lis…" <small>⏎</small></div></div></div>
+  <div class="mini"><div class="lab">/ · add a block</div>
+    <div class="pal"><div class="r on">☐ Checklist</div><div class="r">⏰ Reminder</div><div class="r">◫ Photo / drawing</div><div class="r">▦ Table</div></div></div>
+  <div class="mini"><div class="lab">Hover · notebooks open up</div>
+    <div class="exp"><div class="on"><i style="background:#e0806a"></i>Us<small>12</small></div><div><i style="background:#7fae8e"></i>Recipes<small>9</small></div><div><i style="background:#7d97c9"></i>School<small>17</small></div><div><i style="background:#e3b456"></i>Ideas<small>10</small></div></div></div>
+</div>
+<div class="pros"><span><b>Feels like:</b> calm, quick, premium</span><span><b>Best for:</b> everything, from a quick list to a long essay</span><span><b>Trade-off:</b> she has to learn ⌘K (I'd add a short first-run hint)</span></div>
+
+</body>
+</html>

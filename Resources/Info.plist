@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Notas</string>
+	<key>CFBundleDisplayName</key>
+	<string>Notas</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.stephenlopez.notas</string>
+	<key>CFBundleExecutable</key>
+	<string>Notas</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>ATSApplicationFontsPath</key>
+	<string>Fonts</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Made with love.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.stephenlopez.notas</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>notas</string>
+			</array>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+		</dict>
+	</array>
+	<key>NotasAppGroupIdentifier</key>
+	<string>$(DEVELOPMENT_TEAM).com.stephenlopez.notas.shared</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key><string>Notas note</string>
+			<key>CFBundleTypeRole</key><string>Editor</string>
+			<key>LSHandlerRank</key><string>Owner</string>
+			<key>LSItemContentTypes</key><array><string>com.stephenlopez.notas.note</string></array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key><string>com.stephenlopez.notas.note</string>
+			<key>UTTypeDescription</key><string>Notas note</string>
+			<key>UTTypeConformsTo</key><array><string>public.data</string><string>public.content</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key><array><string>notasnote</string></array>
+				<key>public.mime-type</key><string>application/vnd.notas.note+json</string>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -1,0 +1,152 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --sys: Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif; --serif: ui-serif, "New York", Georgia, serif; --mono: ui-monospace, "SF Mono", Menlo, monospace; --acc: #8b7cff; }
+  body { margin: 0; font-family: var(--sys); color: var(--foreground); -webkit-font-smoothing: antialiased; }
+  .lab { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); font-weight: 600; margin: 26px 0 10px; }
+  .lab:first-child { margin-top: 0; }
+  .cap { font-size: 12.5px; color: var(--muted-foreground); margin-top: 8px; line-height: 1.45; }
+
+  .desk { padding: 20px; border-radius: var(--radius); background: radial-gradient(circle at 15% 0%, #2c2550, #0d0c12 65%); }
+  .win { position: relative; height: 470px; border-radius: 14px; overflow: hidden; background: #111114; color: #ecebf0; box-shadow: 0 0 0 .5px rgba(255,255,255,.12), 0 30px 60px -20px #000; }
+  .lights { position: absolute; top: 12px; left: 14px; display: flex; gap: 7px; }
+  .lights i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .tabs { position: absolute; top: 9px; left: 0; right: 0; display: flex; justify-content: center; gap: 4px; }
+  .tab { font-size: 12px; padding: 4px 11px; border-radius: 8px; color: #6e6c78; }
+  .tab.on { background: #1d1c22; color: #ecebf0; }
+  .tr { position: absolute; top: 9px; right: 12px; display: flex; gap: 6px; }
+  .btn { height: 24px; min-width: 24px; padding: 0 8px; border-radius: 7px; background: #1d1c22; color: #9a98a6; font-size: 11.5px; display: grid; place-items: center; }
+  .btn.on { background: color-mix(in srgb, var(--acc) 22%, #1d1c22); color: #d9d4ff; }
+  .rail { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 11px; align-items: center; padding: 11px 7px; border-radius: 99px; background: #18171c; }
+  .rail i { width: 9px; height: 9px; border-radius: 50%; display: block; }
+  .rail i.on { box-shadow: 0 0 0 3px #18171c, 0 0 0 4.5px var(--acc); }
+  .rail span { font-size: 12px; color: #55535e; line-height: 1; }
+
+  .doc { position: absolute; top: 54px; left: 74px; width: 390px; }
+  .meta { font-family: var(--mono); font-size: 10.5px; color: #6e6c78; letter-spacing: .04em; margin-bottom: 8px; }
+  .meta b { color: #ff6b57; font-weight: 500; }
+  .doc h1 { font-family: var(--serif); font-size: 32px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 4px; }
+  .tags { display: flex; gap: 5px; margin-bottom: 14px; }
+  .tags span { font-size: 11px; color: #a9a5c4; background: #1d1c24; padding: 2px 7px; border-radius: 5px; }
+  .doc p { font-size: 13.5px; line-height: 1.65; color: #c9c7d2; margin: 0 0 10px; }
+  .hl { background: color-mix(in srgb, var(--acc) 30%, transparent); color: #fff; padding: 0 2px; border-radius: 3px; }
+  .callout { display: flex; gap: 10px; background: color-mix(in srgb, var(--acc) 10%, #16151b); border-left: 2px solid var(--acc); border-radius: 6px; padding: 9px 12px; font-size: 12.5px; color: #cfcbe6; margin-bottom: 12px; }
+  .ck { display: flex; gap: 9px; align-items: center; font-size: 13.5px; color: #c9c7d2; margin: 5px 0; }
+  .ck i { width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid #4a4855; flex: none; }
+  .ck.done i { background: var(--acc); border-color: var(--acc); }
+  .ck.done span { color: #5d5b67; text-decoration: line-through; }
+  table.t { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 12px; }
+  .t td, .t th { padding: 5px 8px; border: .5px solid #2a2930; text-align: left; color: #b9b7c4; }
+  .t th { color: #7c7a88; font-weight: 500; background: #16151b; font-size: 11px; }
+  .gal { display: flex; gap: 5px; margin-top: 12px; }
+  .gal i { flex: 1; height: 52px; border-radius: 7px; display: block; }
+
+  .insp { position: absolute; top: 44px; right: 12px; width: 196px; bottom: 12px; background: rgba(28,27,33,.92); border: .5px solid #2d2c34; border-radius: 12px; padding: 12px; box-sizing: border-box; font-size: 11.5px; color: #9a98a6; }
+  .insp h5 { margin: 0 0 8px; font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #6e6c78; }
+  .themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 14px; }
+  .th { border-radius: 7px; height: 44px; position: relative; display: flex; flex-direction: column; justify-content: flex-end; padding: 4px 6px; box-sizing: border-box; font-size: 9.5px; }
+  .th b { font-family: var(--serif); font-size: 13px; font-weight: 600; line-height: 1; }
+  .th.on { box-shadow: 0 0 0 1.5px var(--acc); }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: .5px solid #2a2930; }
+  .row em { font-style: normal; color: #d6d4de; }
+  .sw { display: flex; gap: 5px; margin: 6px 0 12px; flex-wrap: wrap; }
+  .sw i { width: 16px; height: 16px; border-radius: 50%; display: block; }
+  .sw i.on { box-shadow: 0 0 0 2px #1c1b21, 0 0 0 3.5px #fff; }
+  .slider { height: 3px; background: #2d2c34; border-radius: 3px; position: relative; width: 70px; }
+  .slider::after { content: ""; position: absolute; left: 0; top: 0; height: 3px; width: 55%; background: var(--acc); border-radius: 3px; }
+
+  .minis { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
+  .mini { border-radius: var(--radius); background: #141318; color: #ecebf0; padding: 16px; font-size: 12px; box-sizing: border-box; min-height: 172px; }
+  .mini .ml { font-size: 11px; font-weight: 600; color: #6e6c78; margin-bottom: 10px; letter-spacing: .02em; }
+  .menu { background: #1f1e25; border: .5px solid #2e2d35; border-radius: 10px; padding: 5px; }
+  .menu div { padding: 6px 8px; border-radius: 6px; display: flex; justify-content: space-between; color: #c9c7d2; }
+  .menu div.on { background: color-mix(in srgb, var(--acc) 22%, #1f1e25); color: #fff; }
+  .menu small { color: #6e6c78; }
+  .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .col { background: #1a1920; border-radius: 8px; padding: 6px; }
+  .col h6 { margin: 0 0 6px; font-size: 10px; color: #7c7a88; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+  .card { background: #24232b; border-radius: 6px; padding: 6px 7px; margin-bottom: 5px; font-size: 11px; color: #cfcdd8; }
+  .card.a { border-left: 2px solid var(--acc); }
+  .qc { background: #1f1e25; border: .5px solid #34333c; border-radius: 12px; padding: 10px 12px; box-shadow: 0 16px 30px -10px #000; }
+  .qc .in { font-size: 14px; color: #ecebf0; padding: 4px 0 10px; }
+  .qc .in::after { content: "▏"; color: var(--acc); }
+  .qc .ft { display: flex; justify-content: space-between; font-size: 10.5px; color: #6e6c78; border-top: .5px solid #2e2d35; padding-top: 7px; }
+  .qc .ft b { color: #a9a5c4; font-weight: 500; }
+  .exp { display: flex; gap: 10px; align-items: center; }
+  .post { width: 112px; height: 140px; border-radius: 10px; padding: 12px 10px; box-sizing: border-box; position: relative; overflow: hidden; flex: none; }
+  .post b { font-family: var(--serif); font-size: 15px; display: block; margin-bottom: 6px; }
+  .post p { margin: 0; font-size: 8px; line-height: 1.5; opacity: .75; }
+  .post .wm { position: absolute; bottom: 7px; left: 10px; font-family: var(--mono); font-size: 7px; opacity: .5; }
+  .expo { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: #9a98a6; }
+  .expo span { background: #1f1e25; border-radius: 6px; padding: 5px 8px; }
+  .expo span.on { background: color-mix(in srgb, var(--acc) 22%, #1f1e25); color: #fff; }
+</style>
+</head>
+<body>
+
+<div class="lab">Notas · Page, dark-first</div>
+<div class="desk">
+  <div class="win">
+    <div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+    <div class="tabs"><span class="tab on">Lisbon trip</span><span class="tab">Sunday pasta</span><span class="tab">Bio · Week 3</span></div>
+    <div class="tr"><span class="btn">✦</span><span class="btn on">Aa</span><span class="btn">⌘K</span></div>
+    <div class="rail">
+      <i class="on" style="background:#ff6b57"></i><i style="background:#7fcf9a"></i><i style="background:#6fa8ff"></i><i style="background:#f5c451"></i><i style="background:#c792ea"></i><span>+</span>
+    </div>
+    <div class="doc">
+      <div class="meta"><b>●</b> US · OCT 19 · 10:42</div>
+      <h1>Lisbon, finally</h1>
+      <div class="tags"><span>#travel</span><span>#2026</span></div>
+      <p>Pastéis at Manteigaria first thing, then the tram up to Alfama <span class="hl">before it gets crowded</span>.</p>
+      <div class="callout">✈︎ <span>Flight TP 202 lands 07:40. Uber to Príncipe Real.</span></div>
+      <div class="ck done"><i></i><span>Book the flights</span></div>
+      <div class="ck"><i></i><span>Sunset dinner at the miradouro</span></div>
+      <table class="t"><tr><th>Day</th><th>Plan</th><th>Budget</th></tr><tr><td>Fri</td><td>Alfama, fado</td><td>€80</td></tr><tr><td>Sat</td><td>Sintra day trip</td><td>€120</td></tr></table>
+      <div class="gal"><i style="background:linear-gradient(135deg,#f0a07a,#b4513a)"></i><i style="background:linear-gradient(135deg,#7ba7d9,#2f4f86)"></i><i style="background:linear-gradient(135deg,#f3d27a,#c08a2e)"></i></div>
+    </div>
+    <div class="insp">
+      <h5>Theme</h5>
+      <div class="themes">
+        <div class="th on" style="background:#111114;color:#ecebf0;border:.5px solid #333"><b>Aa</b>Midnight</div>
+        <div class="th" style="background:#f6f1e7;color:#3b2f25"><b>Aa</b>Paper</div>
+        <div class="th" style="background:#0b0b0b;color:#c7f36b;font-family:var(--mono)"><b style="font-family:var(--mono)">Aa</b>Terminal</div>
+        <div class="th" style="background:#f7dfe2;color:#7a3141"><b>Aa</b>Blush</div>
+        <div class="th" style="background:#1b2a24;color:#cfe8d6"><b>Aa</b>Sage</div>
+        <div class="th" style="background:#ffffff;color:#111"><b>Aa</b>Ink</div>
+      </div>
+      <h5>Accent</h5>
+      <div class="sw"><i class="on" style="background:#8b7cff"></i><i style="background:#ff6b57"></i><i style="background:#c7f36b"></i><i style="background:#5cc8ff"></i><i style="background:#ff8fc7"></i><i style="background:#f5c451"></i><i style="background:#7fcf9a"></i><i style="background:#fff"></i></div>
+      <div class="row">Title font <em>New York</em></div>
+      <div class="row">Body font <em>Inter</em></div>
+      <div class="row">Size <em>15 pt</em></div>
+      <div class="row">Spacing <div class="slider"></div></div>
+      <div class="row">Width <em>Narrow</em></div>
+    </div>
+  </div>
+</div>
+<div class="cap">Notebook dots on the left, open notes as tabs across the top, the note itself in the middle. <b>Aa</b> opens the theme panel: start from a preset, then adjust the accent, fonts, size, and spacing for that note. <b>✦</b> is the on-device AI, and <b>⌘K</b> does everything else.</div>
+
+<div class="minis">
+  <div class="mini"><div class="ml">✦ AI · works on her Mac, offline</div>
+    <div class="menu"><div class="on">Tidy up formatting <small>⌘⇧T</small></div><div>Turn into checklist</div><div>Summarize</div><div>Make a table from this</div><div>Find related notes</div></div></div>
+  <div class="mini"><div class="ml">▦ Any list can become a board</div>
+    <div class="board">
+      <div class="col"><h6>To book</h6><div class="card a">Sintra tickets</div><div class="card">Fado night</div></div>
+      <div class="col"><h6>Booked</h6><div class="card">Flights</div><div class="card">Apartment</div></div>
+      <div class="col"><h6>Maybe</h6><div class="card">Cascais beach</div></div>
+    </div></div>
+  <div class="mini"><div class="ml">⌥Space · quick note over any app</div>
+    <div class="qc"><div class="in">Call mom about Sunday</div><div class="ft"><span>→ <b>Inbox</b> · #family</span><span>esc saves</span></div></div>
+    <div class="ml" style="margin-top:14px">Also: widgets · share sheet · scan from iPhone camera</div></div>
+  <div class="mini"><div class="ml">↗ Export a note as an image or PDF</div>
+    <div class="exp">
+      <div class="post" style="background:#111114;color:#ecebf0;border:.5px solid #2e2d35"><b>Lisbon, finally</b><p>Pastéis at Manteigaria first thing, then the tram up to Alfama…</p><div class="wm">NOTAS</div></div>
+      <div class="post" style="background:#f7dfe2;color:#7a3141"><b>Sunday pasta</b><p>Brown the butter until it smells like hazelnuts…</p><div class="wm">NOTAS</div></div>
+      <div class="expo"><span class="on">Story 9:16</span><span>Square</span><span>PDF</span></div>
+    </div></div>
+</div>
+
+</body>
+</html>

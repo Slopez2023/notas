@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --sys: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; --serif: ui-serif, "New York", Georgia, serif; }
+  body { margin: 0; font-family: var(--sys); color: var(--foreground); -webkit-font-smoothing: antialiased; }
+  h2 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); font-weight: 600; margin: 28px 0 10px; }
+  h2:first-child { margin-top: 0; }
+
+  /* market table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--muted-foreground); font-size: 11.5px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; line-height: 1.4; }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--muted); color: var(--muted-foreground); white-space: nowrap; }
+
+  /* mock window */
+  .desk { padding: 22px; border-radius: var(--radius); background: linear-gradient(135deg, #f3d9c7 0%, #e9c6d0 45%, #c9cfe8 100%); }
+  .win { border-radius: 16px; overflow: hidden; background: #fbfaf7; box-shadow: 0 0 0 .5px rgba(0,0,0,.18), 0 22px 50px -12px rgba(60,30,40,.35); display: grid; grid-template-columns: 178px 222px 1fr; height: 470px; color: #1d1d1f; font-family: var(--sys); }
+  .side { background: rgba(246,240,236,.92); padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; border-right: .5px solid rgba(0,0,0,.08); }
+  .lights { display: flex; gap: 8px; padding: 4px 6px 16px; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .s-label { font-size: 11px; font-weight: 600; color: #8e8580; padding: 10px 8px 4px; }
+  .s-item { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 8px; border-radius: 8px; color: #3a3330; }
+  .s-item .n { margin-left: auto; color: #a39a94; font-size: 12px; }
+  .s-item.on { background: rgba(204,120,92,.16); color: #9a4a33; font-weight: 500; }
+  .dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .quick { margin-top: auto; font-size: 11.5px; color: #8e8580; padding: 8px; border-top: .5px solid rgba(0,0,0,.07); }
+  kbd { font-family: var(--sys); font-size: 10.5px; background: #fff; border: .5px solid rgba(0,0,0,.15); border-radius: 4px; padding: 0 4px; }
+
+  .list { background: #f8f6f2; border-right: .5px solid rgba(0,0,0,.07); padding: 12px 8px; overflow: hidden; }
+  .search { background: rgba(0,0,0,.05); border-radius: 8px; font-size: 12.5px; color: #9b938d; padding: 6px 10px; margin: 0 4px 12px; }
+  .group { font-size: 11px; font-weight: 600; color: #a39a94; padding: 6px 10px 4px; }
+  .card { padding: 9px 10px; border-radius: 10px; margin-bottom: 2px; }
+  .card.on { background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 0 0 .5px rgba(0,0,0,.06); }
+  .card b { display: block; font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .card p { margin: 0; font-size: 12px; color: #8a827c; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .card small { font-size: 11px; color: #b0a8a2; }
+
+  .editor { position: relative; background: #fffdf9; overflow: hidden; }
+  .tb { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 12px; }
+  .glass { height: 28px; min-width: 28px; padding: 0 9px; border-radius: 99px; background: rgba(255,255,255,.7); box-shadow: 0 0 0 .5px rgba(0,0,0,.1), 0 2px 6px rgba(0,0,0,.05), inset 0 1px 0 #fff; display: grid; place-items: center; font-size: 12px; color: #6b625d; }
+  .page { max-width: 420px; margin: 0 auto; padding: 4px 28px 0; }
+  .meta { font-size: 11.5px; color: #b0a39a; margin-bottom: 8px; }
+  .page h1 { font-family: var(--serif); font-size: 28px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 12px; }
+  .page p { font-family: var(--serif); font-size: 16px; line-height: 1.65; color: #2c2725; margin: 0 0 12px; }
+  .check { display: flex; gap: 10px; align-items: center; font-family: var(--serif); font-size: 16px; color: #2c2725; margin: 6px 0; }
+  .check i { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid #cc785c; flex: none; display: grid; place-items: center; }
+  .check.done i { background: #cc785c; }
+  .check.done i::after { content: ""; width: 5px; height: 8px; border: solid #fff; border-width: 0 1.6px 1.6px 0; transform: translateY(-1px) rotate(45deg); }
+  .check.done span { color: #b0a8a2; text-decoration: line-through; }
+  .hl { background: linear-gradient(transparent 55%, rgba(244,196,120,.55) 55%); }
+  .fmt { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; gap: 2px; padding: 4px; border-radius: 99px; background: rgba(255,255,255,.72); backdrop-filter: blur(16px); box-shadow: 0 0 0 .5px rgba(0,0,0,.1), 0 8px 24px -6px rgba(0,0,0,.18), inset 0 1px 0 #fff; }
+  .fmt span { font-size: 13px; color: #4b4440; width: 30px; height: 26px; display: grid; place-items: center; border-radius: 99px; }
+  .fmt span.on { background: rgba(204,120,92,.16); color: #9a4a33; }
+  .fmt .sep { width: 1px; background: rgba(0,0,0,.1); margin: 5px 3px; }
+
+  /* principles */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+  .p { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+  .p b { display: block; font-size: 13.5px; margin-bottom: 4px; }
+  .p span { font-size: 12.5px; color: var(--muted-foreground); line-height: 1.45; }
+  .caption { font-size: 12px; color: var(--muted-foreground); margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<h2>What's out there</h2>
+<table>
+  <tr><th>App</th><th>How it feels</th><th>Where it falls short for a "just notes" person</th></tr>
+  <tr><td>Apple Notes</td><td>Free and built in, syncs everywhere</td><td>Tiny default text you can't change, plain gray look, clunky sharing and folders</td></tr>
+  <tr><td>Bear <span class="tag">$30/yr</span></td><td>The prettiest Markdown app, lots of themes, organized by tags</td><td>The <code>#tags</code> and Markdown symbols put off people who don't write Markdown</td></tr>
+  <tr><td>Craft <span class="tag">$8/mo</span></td><td>Gorgeous docs built from blocks, really feels like a Mac app</td><td>Built for work docs, so it's heavy and pricey for personal notes</td></tr>
+  <tr><td>Ulysses / iA Writer</td><td>Calm, focused places to write</td><td>Made for long writing, not quick lists and day-to-day notes</td></tr>
+  <tr><td>Tot</td><td>Charming, always in the menu bar</td><td>Only 7 notes. It's a scratchpad, not a notes library</td></tr>
+  <tr><td>Obsidian / Notion</td><td>Very powerful</td><td>Not Mac-native, and too much to learn</td></tr>
+</table>
+<div class="caption">The open spot: as warm and polished as Bear, as simple as Apple Notes, and readable without changing any settings.</div>
+
+<h2>Concept: Notas</h2>
+<div class="desk">
+  <div class="win">
+    <aside class="side">
+      <div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+      <div class="s-item on">✦ All Notes <span class="n">48</span></div>
+      <div class="s-item">☆ Pinned <span class="n">5</span></div>
+      <div class="s-label">Notebooks</div>
+      <div class="s-item"><span class="dot" style="background:#e8a598"></span>Us <span class="n">12</span></div>
+      <div class="s-item"><span class="dot" style="background:#9cc5a1"></span>Recipes <span class="n">9</span></div>
+      <div class="s-item"><span class="dot" style="background:#a7b8e0"></span>School <span class="n">17</span></div>
+      <div class="s-item"><span class="dot" style="background:#f0c987"></span>Ideas <span class="n">10</span></div>
+      <div class="quick">Quick note from anywhere<br><kbd>⌥</kbd> <kbd>Space</kbd></div>
+    </aside>
+    <section class="list">
+      <div class="search">⌕ Search</div>
+      <div class="group">Today</div>
+      <div class="card on"><b>Lisbon trip ✈︎</b><p>Pastéis at Manteigaria first thing, then the tram up to Alfama…</p><small>10:42</small></div>
+      <div class="card"><b>Gift ideas</b><p>That ceramic mug from the market, film camera strap</p><small>9:15</small></div>
+      <div class="group">This week</div>
+      <div class="card"><b>Sunday pasta</b><p>Brown butter, sage, a lot of parmesan</p><small>Sat</small></div>
+      <div class="card"><b>Books to read</b><p>Tomorrow, and Tomorrow, and Tomorrow…</p><small>Thu</small></div>
+    </section>
+    <main class="editor">
+      <div class="tb"><div class="glass">⌘</div><div class="glass">Aa</div><div class="glass">⤴︎</div></div>
+      <div class="page">
+        <div class="meta">Us · Edited 10:42</div>
+        <h1>Lisbon trip ✈︎</h1>
+        <p>Pastéis at Manteigaria first thing, then the tram up to Alfama before it gets <span class="hl">too crowded</span>.</p>
+        <div class="check done"><i></i><span>Book the flights</span></div>
+        <div class="check done"><i></i><span>Find a place near Príncipe Real</span></div>
+        <div class="check"><i></i><span>Dinner reservation, sunset at the miradouro</span></div>
+      </div>
+      <div class="fmt"><span class="on"><b>B</b></span><span><i>I</i></span><span><u>U</u></span><span>☰</span><span>◯</span><div class="sep"></div><span style="color:#d9a441">●</span></div>
+    </main>
+  </div>
+</div>
+<div class="caption">Three columns like Apple Notes, so she'll know her way around right away. The difference is the warm paper background, the New York serif at 16pt, colored notebooks, and a floating glass formatting bar.</div>
+
+<h2>What makes it feel premium</h2>
+<div class="grid">
+  <div class="p"><b>Easy to read out of the box</b><span>Big, well-set default text and a typeface picker (serif, sans, rounded). No tiny 12pt Helvetica.</span></div>
+  <div class="p"><b>Formatting without Markdown</b><span>A floating bar plus ⌘B/⌘I. Typing "- " or "[] " turns into a list or checklist, and no symbols ever show.</span></div>
+  <div class="p"><b>Quick note from anywhere</b><span>⌥Space opens a small floating note over whatever app she's in, like Spotlight but for notes.</span></div>
+  <div class="p"><b>Small touches</b><span>Spring animations, satisfying checkbox ticks, haptics on the trackpad, highlighter colors, and a calm dark mode.</span></div>
+  <div class="p"><b>Native Mac app, no lag</b><span>Built in SwiftUI with the new rich-text TextEditor in macOS 26. Opens instantly, follows system Liquid Glass.</span></div>
+  <div class="p"><b>Her notes stay hers</b><span>Stored on her Mac and synced through her own iCloud. No account, no subscription, export anytime.</span></div>
+</div>
+
+</body>
+</html>

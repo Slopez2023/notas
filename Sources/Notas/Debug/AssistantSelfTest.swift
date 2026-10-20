@@ -310,7 +310,7 @@ enum AssistantSelfTest {
                 } catch { failure = error.localizedDescription }
                 try check(failure.contains(expected), "DeepSeek rejects \(prompt.lowercased()) replies without exposing reasoning")
             }
-            library.flush()
+            let _: Bool = library.flush() // the blocking overload; the async one needs await
             if let directory = ProcessInfo.processInfo.environment["NOTAS_REVIEW_PREVIEWS"] {
                 try renderReviewPreviews(to: URL(fileURLWithPath: directory))
                 try check(true, "native review cards rendered in light and dark themes")

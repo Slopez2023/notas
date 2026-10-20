@@ -4,7 +4,7 @@ import SwiftUI
 struct NoteChatSidebar: View {
     let noteID: UUID
     @Environment(AppState.self) private var app
-    @State private var showSettings = false
+    @State private var replacingKey = false
     @State private var historyID: UUID?
     @State private var keyDraft = ""
     @FocusState private var composing: Bool
@@ -22,12 +22,7 @@ struct NoteChatSidebar: View {
         VStack(spacing: 0) {
             header
             Divider().opacity(0.35)
-            if showSettings { settings }
-            if !assistant.connected || assistant.account == nil {
-                signIn
-            } else if !assistant.modelAvailable {
-                Text(assistant.status).font(.callout).foregroundStyle(style.secondary).padding(20)
-            }
+            if !assistant.hasKey || replacingKey { keyEntry }
             transcript
             if isHistory {
                 Button("Return to current conversation") { historyID = nil }
@@ -63,15 +58,10 @@ struct NoteChatSidebar: View {
                         }
                     }
                     Divider()
-                    Button("Chat settings") { showSettings.toggle() }
-                    if assistant.account != nil {
-                        if assistant.provider == .chatgpt {
-                            Button("Sign out of chat") { Task { await assistant.signOut() } }
-                                .disabled(!assistant.busyNotes.isEmpty)
-                        } else {
-                            Button("Remove OpenCode key") { Task { await assistant.removeOpenCodeKey() } }
-                                .disabled(!assistant.busyNotes.isEmpty)
-                        }
+                    Button(assistant.hasKey ? "Replace API key…" : "Add API key…") { replacingKey = true }
+                    if assistant.hasKey {
+                        Button("Remove API key") { assistant.removeKey(); replacingKey = false }
+                            .disabled(!assistant.busyNotes.isEmpty)
                     }
                 } label: { Image(systemName: "ellipsis").frame(width: 22, height: 24) }
                     .menuStyle(.borderlessButton).fixedSize()
@@ -82,7 +72,7 @@ struct NoteChatSidebar: View {
             Text(app.store.notes[noteID]?.displayTitle ?? "Note removed")
                 .font(.system(size: 12, weight: .medium)).foregroundStyle(style.secondary).lineLimit(1)
             HStack(spacing: 5) {
-                Circle().fill(assistant.connected && assistant.account != nil ? Color.green : style.tertiary).frame(width: 5, height: 5)
+                Circle().fill(assistant.hasKey ? Color.green : style.tertiary).frame(width: 5, height: 5)
                 Text(isHistory ? "Earlier conversation · read only" : "\(assistant.modelLabel) · medium · this note only")
                     .font(.system(size: 10.5)).foregroundStyle(style.tertiary)
             }
@@ -90,79 +80,35 @@ struct NoteChatSidebar: View {
         .padding(16)
     }
 
-    private var signIn: some View {
+    private var keyEntry: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("A writing partner for this note")
                 .font(.system(size: 15, weight: .semibold, design: .serif))
-            Text("Sending a message shares this note's text with the service you pick. Photos and files stay on your Mac.")
+            Text("Sending a message shares this note's text with OpenCode and its model provider. Photos and files stay on your Mac.")
                 .font(.system(size: 12)).foregroundStyle(style.secondary).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 6) {
                 Text("OpenCode API key").font(.system(size: 11, weight: .semibold))
                 SecureField("Paste your key", text: $keyDraft)
                     .textFieldStyle(.roundedBorder).font(.system(size: 12))
                     .onSubmit(saveKey)
-                Button(action: saveKey) {
-                    HStack {
-                        if assistant.connecting && assistant.provider == .opencode { ProgressView().controlSize(.small) }
-                        Text(assistant.connecting && assistant.provider == .opencode ? "Connecting…" : assistant.hasOpenCodeKey ? "Use saved key, or replace it" : "Use OpenCode key")
-                    }.frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(assistant.connecting || (keyDraft.isEmpty && !assistant.hasOpenCodeKey))
-                Text("Stored in your Keychain. Uses Luna at medium reasoning through OpenCode Go.")
+                HStack {
+                    Button("Save key", action: saveKey)
+                        .buttonStyle(.borderedProminent).disabled(keyDraft.isEmpty)
+                    if replacingKey { Button("Cancel") { replacingKey = false; keyDraft = "" } }
+                }.controlSize(.small)
+                Text("Stored in your Keychain. Uses \(assistant.modelLabel) at medium reasoning through OpenCode Go.")
                     .font(.system(size: 10.5)).foregroundStyle(style.tertiary)
             }
-            Divider().opacity(0.35)
-            if assistant.signingIn {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text("Finish sign-in in your browser").font(.caption)
-                    Spacer()
-                    Button("Cancel") { Task { await assistant.cancelSignIn() } }.font(.caption)
-                }
-            } else {
-                Button {
-                    Task {
-                        if assistant.provider != .chatgpt { await assistant.useProvider(.chatgpt) }
-                        await assistant.connect()
-                        if assistant.connected && assistant.account == nil { await assistant.signIn() }
-                    }
-                } label: {
-                    HStack {
-                        if assistant.connecting && assistant.provider == .chatgpt { ProgressView().controlSize(.small) }
-                        Text("Or continue with ChatGPT (Sol)")
-                    }.frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered).disabled(assistant.connecting)
-            }
-            Button("Codex CLI setup") { showSettings = true }.buttonStyle(.link).font(.caption)
         }
         .padding(16)
         .background(style.surface.opacity(0.5))
     }
 
     private func saveKey() {
-        let key = keyDraft
+        guard !keyDraft.isEmpty else { return }
+        assistant.saveKey(keyDraft)
+        if assistant.error == nil { replacingKey = false }
         keyDraft = ""
-        Task { await assistant.useProvider(.opencode, key: key.isEmpty ? nil : key) }
-    }
-
-    private var settings: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let account = assistant.account { Text(account).font(.caption).textSelection(.enabled) }
-            Text(assistant.provider == .chatgpt ? "Codex CLI 0.163.x · separate Notas login" : "Codex CLI 0.163.x · OpenCode Go key from your Keychain")
-                .font(.caption).foregroundStyle(style.secondary)
-            Text(assistant.binaryPath.isEmpty ? (CodexConnection.findExecutable()?.path ?? "Codex CLI not found") : assistant.binaryPath)
-                .font(.system(size: 10, design: .monospaced)).lineLimit(2).textSelection(.enabled)
-            HStack {
-                Button("Choose executable…") { chooseExecutable() }.disabled(!assistant.busyNotes.isEmpty)
-                Link("Install", destination: URL(string: "https://developers.openai.com/codex/cli/")!)
-                Spacer()
-                Button("Reconnect") { Task { await assistant.reconnect() } }.disabled(assistant.connecting || !assistant.busyNotes.isEmpty)
-            }.font(.caption)
-            Text(assistant.status).font(.caption).foregroundStyle(style.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(16).background(style.surface.opacity(0.6))
     }
 
     private var transcript: some View {
@@ -240,10 +186,6 @@ struct NoteChatSidebar: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if current.awaitingReply && !busy {
-                Button("Recover interrupted response") { Task { await assistant.recover(noteID) } }
-                    .font(.caption).disabled(!assistant.connected || assistant.account == nil)
-            }
             TextEditor(text: Binding(get: { current.draft }, set: { assistant.setDraft($0, for: noteID) }))
                 .font(.system(size: 13)).scrollContentBackground(.hidden)
                 .frame(height: 68).padding(6)
@@ -262,24 +204,11 @@ struct NoteChatSidebar: View {
                     Button("Send", systemImage: "arrow.up") { assistant.send(noteID) }
                         .buttonStyle(.borderedProminent).controlSize(.small)
                         .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(!assistant.connected || assistant.account == nil || !assistant.modelAvailable || current.awaitingReply || current.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(!assistant.hasKey || current.awaitingReply || current.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
         .padding(16)
         .background(style.background)
-    }
-
-    private func chooseExecutable() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose Codex CLI"
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.showsHiddenFiles = true
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            assistant.binaryPath = url.path
-            Task { await assistant.reconnect() }
-        }
     }
 }

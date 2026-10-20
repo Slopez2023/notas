@@ -12,8 +12,6 @@ struct NoteChatMessage: Codable, Identifiable {
 struct NoteChatSession: Codable, Identifiable {
     var id = UUID()
     let noteID: UUID
-    var threadID: String?
-    var turnID: String?
     var draft = ""
     var messages: [NoteChatMessage] = []
     var awaitingReply = false
@@ -27,117 +25,50 @@ final class NoteAssistant {
     private(set) var sessions: [UUID: NoteChatSession] = [:]
     private(set) var archives: [NoteChatSession] = []
     private(set) var busyNotes: Set<UUID> = []
-    private(set) var connected = false
-    private(set) var connecting = false
-    private(set) var signingIn = false
-    private(set) var account: String?
-    private(set) var provider: AssistantProvider
-    private(set) var modelAvailable = false
-    private(set) var status = "Connect an account to chat about this note."
-    var modelLabel: String { provider.modelName }
+    private(set) var hasKey = false
     var error: String?
-    var binaryPath: String {
-        didSet { app?.defaults.set(binaryPath, forKey: "codexExecutable") }
-    }
-    private var partition: UUID
+    var modelLabel: String { ChatClient.modelName }
+    var status: String { hasKey ? "\(ChatClient.modelName) · medium reasoning" : "Add an OpenCode API key to chat about this note." }
     @ObservationIgnored private weak var app: AppState?
-    @ObservationIgnored private var connection: CodexConnection
-    @ObservationIgnored private let codexHomes: URL
     @ObservationIgnored private let stateURL: URL
     @ObservationIgnored private let io = DispatchQueue(label: "notas.assistant.persistence")
-    @ObservationIgnored private var resumed: Set<String> = []
-    @ObservationIgnored private var finalText: [String: String] = [:]
+    @ObservationIgnored private var apiKey: String?
+    @ObservationIgnored var baseURL = ChatClient.defaultBaseURL
     @ObservationIgnored private var snapshots: [UUID: NoteDocument] = [:]
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
-    @ObservationIgnored private var deadlines: [UUID: Task<Void, Never>] = [:]
-    @ObservationIgnored private var loginID: String?
 
     private struct Saved: Codable {
         let version: Int
-        let partition: UUID
-        let account: String?
-        let provider: AssistantProvider?
         let sessions: [NoteChatSession]
         let archives: [NoteChatSession]
     }
 
     init(app: AppState, storageRoot: URL? = nil) {
         self.app = app
-        binaryPath = app.defaults.string(forKey: "codexExecutable") ?? ""
         let library = app.store.rootURL.resolvingSymlinksInPath().standardizedFileURL.path
         let identity = (try? NoteEdit.revision(NoteDocument(blocks: [Block(kind: .title, runs: [InlineRun(text: library)])]))) ?? UUID().uuidString
         let support = storageRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Notas/Assistant/\(identity)", isDirectory: true)
         stateURL = support.appendingPathComponent("sessions.json")
-        codexHomes = support
-        let chosen = AssistantProvider(rawValue: app.defaults.string(forKey: "assistantProvider") ?? "") ?? .chatgpt
-        provider = chosen
-        connection = CodexConnection(home: support.appendingPathComponent(chosen == .chatgpt ? "Codex" : "Codex-OpenCode", isDirectory: true),
-                                     provider: chosen, apiKey: chosen == .opencode ? AssistantKeychain.read() : nil)
-        partition = UUID()
         if let data = try? Data(contentsOf: stateURL) {
             do {
                 let saved = try JSONDecoder().decode(Saved.self, from: data)
                 guard saved.version == 1 else { throw AssistantError.message("Chat history uses an unsupported version.") }
-                partition = saved.partition; account = saved.account
-                if saved.provider != nil && saved.provider != chosen { account = nil }
                 sessions = Dictionary(saved.sessions.map { ($0.noteID, $0) }, uniquingKeysWith: { first, _ in first })
                 archives = saved.archives
+                // A reply that was in flight when the app closed is gone; never resend it automatically.
+                for id in sessions.keys where sessions[id]?.awaitingReply == true {
+                    sessions[id]?.awaitingReply = false
+                    sessions[id]?.messages.append(NoteChatMessage(role: .notice, text: "Notas closed before this reply arrived. Send your message again."))
+                }
             } catch { self.error = "Chat history couldn't be loaded. The saved file has been kept. \(error.localizedDescription)" }
         }
-        wire(connection)
-    }
-
-    private func wire(_ connection: CodexConnection) {
-        connection.onEvent = { [weak self] method, params in self?.receive(method, params) }
-        connection.onDisconnect = { [weak self] reason in
-            guard let self else { return }
-            self.connected = false; self.connecting = false; self.modelAvailable = false
-            self.signingIn = false; self.loginID = nil; self.resumed.removeAll()
-            for id in self.busyNotes { self.addNotice(reason, to: id) }
-            self.busyNotes.removeAll()
-            self.deadlines.values.forEach { $0.cancel() }; self.deadlines.removeAll()
-            self.status = reason
+        // `scripts/run.sh` exports a key from the project's .env.local. Adopt it once so later launches use the Keychain.
+        if AssistantKeychain.read() == nil, let fromEnvironment = ProcessInfo.processInfo.environment["OPENCODE_API_KEY"], !fromEnvironment.isEmpty {
+            try? AssistantKeychain.save(fromEnvironment)
         }
-    }
-
-    var hasOpenCodeKey: Bool { AssistantKeychain.read() != nil }
-
-    /// Switches the account route. Conversations never carry across routes, so the current ones are archived.
-    func useProvider(_ next: AssistantProvider, key: String? = nil) async {
-        guard busyNotes.isEmpty, !connecting else { return }
-        error = nil
-        if let key, next == .opencode {
-            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, trimmed.unicodeScalars.allSatisfy({ $0.isASCII && $0.value > 32 }) else {
-                error = "That doesn't look like an API key. Paste the key exactly as OpenCode shows it."; return
-            }
-            do { try AssistantKeychain.save(trimmed) } catch { self.error = error.localizedDescription; return }
-        }
-        if next == .opencode, AssistantKeychain.read() == nil { error = "Add your OpenCode API key first."; return }
-        let changed = next != provider || key != nil
-        connection.stop(reason: "Switching accounts…")
-        if changed { stopAll(); archivePartition() }
-        provider = next
-        app?.defaults.set(next.rawValue, forKey: "assistantProvider")
-        connection = CodexConnection(home: codexHomes.appendingPathComponent(next == .chatgpt ? "Codex" : "Codex-OpenCode", isDirectory: true),
-                                     provider: next, apiKey: next == .opencode ? AssistantKeychain.read() : nil)
-        wire(connection)
-        account = nil; modelAvailable = false; connected = false
-        status = next == .opencode ? "Connecting with your OpenCode key…" : "Sign in with ChatGPT to use your subscription."
-        persist()
-        await connect()
-    }
-
-    func removeOpenCodeKey() async {
-        guard busyNotes.isEmpty else { return }
-        AssistantKeychain.delete()
-        connection.stop(reason: "Removed the OpenCode key.")
-        stopAll(); archivePartition()
-        account = nil; modelAvailable = false; connected = false
-        status = "Removed the OpenCode key."
-        persist()
-        await useProvider(.chatgpt)
+        apiKey = AssistantKeychain.read()
+        hasKey = apiKey != nil
     }
 
     func session(for noteID: UUID) -> NoteChatSession {
@@ -154,104 +85,24 @@ final class NoteAssistant {
         persist()
     }
 
-    func connect() async {
-        guard !connecting else { return }
-        connecting = true; error = nil
-        defer { connecting = false }
-        connection.executable = binaryPath.isEmpty ? nil : URL(fileURLWithPath: binaryPath)
-        do {
-            try await connection.start()
-            connected = true
-            try await refreshAccount()
-        } catch { self.error = error.localizedDescription }
+    func saveKey(_ raw: String) {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, key.unicodeScalars.allSatisfy({ $0.isASCII && $0.value > 32 }) else {
+            error = "That doesn't look like an API key. Paste the key exactly as OpenCode shows it."; return
+        }
+        do { try AssistantKeychain.save(key) } catch { self.error = error.localizedDescription; return }
+        apiKey = key; hasKey = true; error = nil
     }
 
-    func reconnect() async {
+    func removeKey() {
         guard busyNotes.isEmpty else { return }
-        connection.stop(reason: "Reconnecting to Codex…")
-        await connect()
-    }
-
-    func signIn() async {
-        if !connected { await connect() }
-        guard connected, !signingIn else { return }
-        error = nil
-        do {
-            // A new browser sign-in always gets a fresh conversation partition, even for the same email/workspace.
-            stopAll()
-            archivePartition()
-            let result = try await connection.request("account/login/start", ["type": "chatgpt"])
-            guard let address = result["authUrl"] as? String, let url = URL(string: address),
-                  url.scheme == "https", let host = url.host,
-                  host == "auth.openai.com" || host == "auth0.openai.com" || host == "chatgpt.com" else {
-                throw AssistantError.message("Codex returned an unexpected sign-in URL.")
-            }
-            loginID = result["loginId"] as? String
-            signingIn = true
-            status = "Finish signing in with ChatGPT in your browser."
-            NSWorkspace.shared.open(url)
-        } catch { self.error = error.localizedDescription }
-    }
-
-    func cancelSignIn() async {
-        if let loginID { _ = try? await connection.request("account/login/cancel", ["loginId": loginID]) }
-        signingIn = false; loginID = nil
-        status = "Sign-in cancelled."
-    }
-
-    func signOut() async {
-        stopAll()
-        do {
-            _ = try await connection.request("account/logout", [:])
-            archivePartition()
-            account = nil; modelAvailable = false
-            status = "Signed out of Notas chat."
-            persist()
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func refreshAccount() async throws {
-        if provider == .opencode {
-            // The key is the account: there is no browser sign-in. The first reply proves the key and model;
-            // a rejected key is reported then, with a way to replace it.
-            if let previous = account, previous != "OpenCode Go key" { archivePartition() }
-            account = "OpenCode Go key"
-            modelAvailable = true
-            status = "\(provider.modelName) · medium reasoning · OpenCode Go"
-            persist()
-            return
-        }
-        let result = try await connection.request("account/read", [:])
-        guard let info = result["account"] as? [String: Any], info["type"] as? String == "chatgpt" else {
-            account = nil; modelAvailable = false
-            status = "Sign in with ChatGPT to use your subscription."
-            return
-        }
-        let identity = (info["email"] as? String ?? "ChatGPT account") + " · " + (info["planType"] as? String ?? "ChatGPT")
-        if let previous = account, previous != identity { archivePartition() }
-        account = identity
-        modelAvailable = false
-        var cursor: String?
-        repeat {
-            var params: [String: Any] = ["limit": 100]
-            if let cursor { params["cursor"] = cursor }
-            let result = try await connection.request("model/list", params)
-            for model in result["data"] as? [[String: Any]] ?? [] where model["model"] as? String == provider.model {
-                let efforts = model["supportedReasoningEfforts"] as? [[String: Any]] ?? []
-                modelAvailable = efforts.contains { $0["reasoningEffort"] as? String == "medium" }
-            }
-            cursor = result["nextCursor"] as? String
-        } while cursor != nil && !modelAvailable
-        status = modelAvailable ? "\(provider.modelName) · medium reasoning" : "\(provider.modelName) medium isn't available. Check your ChatGPT plan and Codex version."
-        persist()
+        AssistantKeychain.delete()
+        apiKey = nil; hasKey = false
     }
 
     func send(_ noteID: UUID) {
-        guard connected, account != nil, modelAvailable, !busyNotes.contains(noteID), let app else { return }
+        guard let apiKey, !busyNotes.contains(noteID), let app else { return }
         ensureSession(noteID)
-        guard sessions[noteID]?.awaitingReply == false else {
-            error = "Recover the previous response before sending another message."; return
-        }
         guard let editor = app.activeEditor, app.activeNoteID == noteID, editor.noteID == noteID, !editor.hasMarkedText() else {
             error = "Open this note and finish typing before sending."; return
         }
@@ -259,123 +110,49 @@ final class NoteAssistant {
         guard !prompt.isEmpty else { return }
         do {
             let document = editor.document
-            snapshots[noteID] = document
             let context = try NoteEdit.context(document)
             let revision = try NoteEdit.revision(document)
-            let user = NoteChatMessage(role: .user, text: prompt)
+            let earlier = (sessions[noteID]?.messages ?? []).filter { $0.role != .notice }.suffix(20).map {
+                ChatTurn(role: $0.role == .user ? "user" : "assistant", text: $0.text)
+            }
+            let decisions = sessions[noteID]?.messages.compactMap { message -> String? in
+                guard let proposal = message.proposal else { return nil }
+                return "Proposal \(proposal.id): \(proposal.state.rawValue)"
+            }.suffix(10).joined(separator: "\n") ?? ""
+            let turns = earlier + [ChatTurn(role: "user", text: "Current note snapshot:\n\(context)\nRecent proposal decisions:\n\(decisions)\nUser request:\n\(prompt)")]
+            snapshots[noteID] = document
             if document.isEmpty { app.store.mutate(noteID, touch: false) { $0.retainsEmptyDocument = true } }
-            sessions[noteID]?.messages.append(user)
+            sessions[noteID]?.messages.append(NoteChatMessage(role: .user, text: prompt))
             sessions[noteID]?.draft = ""
             sessions[noteID]?.baseRevision = revision
             sessions[noteID]?.diskRevision = diskRevision(noteID)
             sessions[noteID]?.awaitingReply = true
-            sessions[noteID]?.turnID = nil
             try saveNow()
             busyNotes.insert(noteID)
             let conversation = sessions[noteID]!.id
+            let client = ChatClient(apiKey: apiKey, baseURL: baseURL)
             tasks[noteID] = Task { [weak self] in
-                guard let self else { return }
                 do {
-                    let thread = try await self.prepareThread(noteID)
-                    guard self.sessions[noteID]?.id == conversation, !Task.isCancelled else { return }
-                    let applied = self.sessions[noteID]?.messages.compactMap { message -> String? in
-                        guard let proposal = message.proposal else { return nil }
-                        return "Proposal \(proposal.id): \(proposal.state.rawValue)"
-                    }.suffix(10).joined(separator: "\n") ?? ""
-                    let result = try await self.connection.request("turn/start", [
-                        "threadId": thread, "model": provider.model, "effort": "medium", "permissions": "notas",
-                        "approvalPolicy": "never", "clientUserMessageId": user.id.uuidString,
-                        "outputSchema": AssistantReply.schema,
-                        "input": [["type": "text", "text": "Current note snapshot:\n\(context)\nRecent proposal decisions:\n\(applied)\nUser request:\n\(prompt)"]]
-                    ])
-                    if let turn = result["turn"] as? [String: Any], let turnID = turn["id"] as? String,
-                       self.sessions[noteID]?.awaitingReply == true {
-                        self.sessions[noteID]?.turnID = turnID
-                    }
-                    self.persist()
-                    if self.busyNotes.contains(noteID) { self.startDeadline(noteID) }
+                    let text = try await client.complete(instructions: NoteEdit.instructions, turns: turns, schema: AssistantReply.schema)
+                    guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation else { return }
+                    self.finish(noteID, text: text)
+                } catch is CancellationError {
+                    return
                 } catch {
-                    self.busyNotes.remove(noteID)
-                    self.addNotice(error.localizedDescription, to: noteID)
-                    self.persist()
+                    guard let self, !Task.isCancelled, self.sessions[noteID]?.id == conversation else { return }
+                    self.fail(noteID, error.localizedDescription)
                 }
-                self.tasks[noteID] = nil
             }
         } catch { self.error = error.localizedDescription }
     }
 
-    private func prepareThread(_ noteID: UUID) async throws -> String {
-        var params: [String: Any] = ["model": provider.model, "permissions": "notas", "approvalPolicy": "never",
-                                     "cwd": connection.scratch.path, "baseInstructions": NoteEdit.instructions]
-        if let thread = sessions[noteID]?.threadID {
-            if !resumed.contains(thread) {
-                params["threadId"] = thread
-                _ = try await connection.request("thread/resume", params)
-                resumed.insert(thread)
-            }
-            return thread
-        }
-        let result = try await connection.request("thread/start", params)
-        guard let thread = (result["thread"] as? [String: Any])?["id"] as? String else {
-            throw AssistantError.message("Codex didn't create a conversation.")
-        }
-        sessions[noteID]?.threadID = thread
-        resumed.insert(thread)
-        try saveNow()
-        return thread
-    }
-
-    func recover(_ noteID: UUID) async {
-        guard connected, !busyNotes.contains(noteID) else { return }
-        busyNotes.insert(noteID)
-        defer { busyNotes.remove(noteID); persist() }
-        do {
-            guard sessions[noteID]?.threadID != nil else {
-                sessions[noteID]?.awaitingReply = false
-                addNotice("The request didn't reach a saved conversation. You can send a new message.", to: noteID)
-                return
-            }
-            let thread = try await prepareThread(noteID)
-            let result = try await connection.request("thread/turns/list", ["threadId": thread, "limit": 1, "sortDirection": "desc", "itemsView": "full"])
-            guard let turn = (result["data"] as? [[String: Any]])?.first else {
-                sessions[noteID]?.awaitingReply = false
-                addNotice("No response was saved. Your message wasn't sent again.", to: noteID)
-                return
-            }
-            if turn["status"] as? String == "inProgress" {
-                if let id = turn["id"] as? String { _ = try await connection.request("turn/interrupt", ["threadId": thread, "turnId": id]) }
-                throw AssistantError.message("The previous request was still running. It was stopped. Recover once more to read its saved result.")
-            }
-            let ownIDs = Set((sessions[noteID]?.messages ?? []).filter { $0.role == .user }.map { $0.id.uuidString })
-            let items = turn["items"] as? [[String: Any]] ?? []
-            let matches = turn["id"] as? String == sessions[noteID]?.turnID || items.contains {
-                $0["type"] as? String == "userMessage" && ownIDs.contains($0["clientId"] as? String ?? "")
-            }
-            if matches, sessions[noteID]?.awaitingReply == true {
-                finish(noteID, turn: turn, items: items)
-            } else {
-                sessions[noteID]?.awaitingReply = false
-                addNotice("History reconciled. Your interrupted message wasn't automatically sent again.", to: noteID)
-            }
-        } catch { self.error = "Recovery failed. \(error.localizedDescription) Start a new conversation if the saved thread is unavailable." }
-    }
-
     func stop(_ noteID: UUID) {
-        tasks[noteID]?.cancel()
-        guard let thread = sessions[noteID]?.threadID else {
-            busyNotes.remove(noteID); return
-        }
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                // A delayed turn/start acknowledgement must be reconciled, never replayed.
-                if let turn = self.sessions[noteID]?.turnID {
-                    _ = try await self.connection.request("turn/interrupt", ["threadId": thread, "turnId": turn])
-                } else {
-                    self.connection.stop(reason: "Stopped before Codex acknowledged the request. Recover before sending again.")
-                }
-            } catch { self.error = error.localizedDescription }
-        }
+        guard busyNotes.contains(noteID) else { return }
+        tasks.removeValue(forKey: noteID)?.cancel()
+        busyNotes.remove(noteID)
+        snapshots[noteID] = nil
+        sessions[noteID]?.awaitingReply = false
+        addNotice("Stopped. No changes were applied.", to: noteID)
     }
 
     func newConversation(_ noteID: UUID) {
@@ -414,67 +191,30 @@ final class NoteAssistant {
     }
 
     func deleteNote(_ noteID: UUID) {
-        if busyNotes.contains(noteID) { stop(noteID) }
+        stop(noteID)
         if let session = sessions.removeValue(forKey: noteID) { archives.append(session) }
         persist()
     }
 
     func shutdown() {
         tasks.values.forEach { $0.cancel() }
-        deadlines.values.forEach { $0.cancel() }
         persist()
         io.sync {}
-        connection.stop()
     }
 
-    private func receive(_ method: String, _ params: [String: Any]) {
-        if method == "account/login/completed" {
-            signingIn = false; loginID = nil
-            if params["success"] as? Bool == true { Task { do { try await refreshAccount() } catch { self.error = error.localizedDescription } } }
-            else { error = params["error"] as? String ?? "ChatGPT sign-in didn't complete." }
-            return
-        }
-        if method == "account/updated" {
-            if provider == .chatgpt, params["authMode"] is NSNull { stopAll(); account = nil; modelAvailable = false; persist() }
-            return
-        }
-        guard let thread = params["threadId"] as? String,
-              let noteID = sessions.first(where: { $0.value.threadID == thread })?.key else { return }
-        if method == "turn/started", let turn = params["turn"] as? [String: Any] {
-            sessions[noteID]?.turnID = turn["id"] as? String
-            persist()
-        } else if method == "item/completed", let item = params["item"] as? [String: Any],
-                  item["type"] as? String == "agentMessage", let text = item["text"] as? String {
-            if let id = item["id"] as? String { finalText[id] = text }
-            if let turn = params["turnId"] as? String { finalText[thread + "/" + turn] = text }
-        } else if method == "turn/completed", let turn = params["turn"] as? [String: Any] {
-            let items = turn["items"] as? [[String: Any]] ?? []
-            finish(noteID, turn: turn, items: items)
-            busyNotes.remove(noteID)
-            deadlines.removeValue(forKey: noteID)?.cancel()
-            persist()
-        } else if method == "error", params["willRetry"] as? Bool != true {
-            error = friendly((params["error"] as? [String: Any])?["message"] as? String) ?? "Codex couldn't complete this request."
-        } else if method == "notas/blockedTool" {
-            stop(noteID)
-            addNotice("Codex requested a tool outside this note's permissions. The request was blocked.", to: noteID)
-        }
+    private func fail(_ noteID: UUID, _ message: String) {
+        busyNotes.remove(noteID); tasks[noteID] = nil; snapshots[noteID] = nil
+        sessions[noteID]?.awaitingReply = false
+        addNotice(message, to: noteID)
     }
 
-    private func finish(_ noteID: UUID, turn: [String: Any], items: [[String: Any]]) {
+    private func finish(_ noteID: UUID, text: String) {
+        busyNotes.remove(noteID); tasks[noteID] = nil
+        defer { snapshots[noteID] = nil; persist() }
         guard sessions[noteID]?.awaitingReply == true else { return }
         sessions[noteID]?.awaitingReply = false
-        let state = turn["status"] as? String ?? "failed"
-        guard state == "completed" else {
-            let detail = friendly((turn["error"] as? [String: Any])?["message"] as? String)
-            addNotice(detail ?? (state == "interrupted" ? "Stopped. No changes were applied." : "Codex couldn't finish this reply. No changes were applied."), to: noteID)
-            return
-        }
-        let agents = items.filter { $0["type"] as? String == "agentMessage" }
-        let key = (sessions[noteID]?.threadID ?? "") + "/" + (turn["id"] as? String ?? "")
-        let text = agents.last?["text"] as? String ?? agents.last.flatMap { $0["id"] as? String }.flatMap { finalText[$0] } ?? finalText[key]
         do {
-            guard let text, text.utf8.count <= 250_000 else { throw AssistantError.message("Codex didn't return a complete response.") }
+            guard text.utf8.count <= 250_000 else { throw AssistantError.message("The reply was too large.") }
             let reply = try JSONDecoder().decode(AssistantReply.self, from: Data(text.utf8))
             var proposal: AssistantProposal?
             if !reply.operations.isEmpty, let revision = sessions[noteID]?.baseRevision {
@@ -489,44 +229,6 @@ final class NoteAssistant {
             }
             sessions[noteID]?.messages.append(NoteChatMessage(role: .assistant, text: reply.reply, proposal: proposal))
         } catch { addNotice("The reply couldn't be read safely. No changes were applied. \(error.localizedDescription)", to: noteID) }
-        for item in agents { if let id = item["id"] as? String { finalText[id] = nil } }
-        finalText[key] = nil
-        snapshots[noteID] = nil
-    }
-
-    /// Makes a rejected OpenCode key actionable without echoing anything the server sent back about it.
-    private func friendly(_ message: String?) -> String? {
-        guard provider == .opencode, let message else { return message }
-        let lower = message.lowercased()
-        if lower.contains("401") || lower.contains("403") || lower.contains("unauthorized") || lower.contains("api key") || lower.contains("invalid") && lower.contains("key") {
-            return "OpenCode rejected the API key. Create a new key in the OpenCode Console, then replace it in chat settings."
-        }
-        if lower.contains("429") || lower.contains("usage") || lower.contains("limit") {
-            return "Your OpenCode Go usage limit was reached. Try again later or check your plan."
-        }
-        return message
-    }
-
-    private func startDeadline(_ noteID: UUID) {
-        deadlines[noteID]?.cancel()
-        deadlines[noteID] = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(300)) } catch { return }
-            self?.stop(noteID)
-            self?.addNotice("This response took too long and was stopped. Recover it before sending again.", to: noteID)
-        }
-    }
-
-    private func stopAll() {
-        for id in busyNotes { stop(id) }
-        tasks.values.forEach { $0.cancel() }; tasks.removeAll()
-        busyNotes.removeAll()
-    }
-
-    private func archivePartition() {
-        archives += sessions.values.filter { !$0.messages.isEmpty }
-        sessions.removeAll(); resumed.removeAll(); finalText.removeAll()
-        partition = UUID()
-        persist()
     }
 
     private func diskRevision(_ noteID: UUID) -> String? {
@@ -543,8 +245,7 @@ final class NoteAssistant {
     }
 
     private func encodedState() throws -> Data {
-        try JSONEncoder().encode(Saved(version: 1, partition: partition, account: account, provider: provider,
-                                       sessions: Array(sessions.values), archives: archives))
+        try JSONEncoder().encode(Saved(version: 1, sessions: Array(sessions.values), archives: archives))
     }
 
     private func saveNow() throws {

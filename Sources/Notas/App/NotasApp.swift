@@ -8,9 +8,9 @@ import NotasShared
 enum Entry {
     static func main() {
         #if DEBUG
-        if CommandLine.arguments.contains("--assistant-test") || CommandLine.arguments.contains("--check-codex") {
+        if CommandLine.arguments.contains("--assistant-test") {
             Task { @MainActor in
-                let success = await AssistantSelfTest.run(realCodex: CommandLine.arguments.contains("--check-codex"))
+                let success = (CommandLine.arguments.contains("--live") ? await AssistantSelfTest.runLive() : await AssistantSelfTest.run())
                 exit(success ? 0 : 1)
             }
             RunLoop.main.run()

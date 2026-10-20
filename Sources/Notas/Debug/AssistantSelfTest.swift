@@ -3,7 +3,38 @@ import AppKit
 
 @MainActor
 enum AssistantSelfTest {
-    static func run(realCodex: Bool) async -> Bool {
+    static func runLive() async -> Bool {
+        guard let key = ProcessInfo.processInfo.environment["OPENCODE_API_KEY"], !key.isEmpty else {
+            print("FAIL: set OPENCODE_API_KEY (scripts/test-assistant.sh --live loads .env.local)"); return false
+        }
+        do {
+            let doc = NoteDocument(blocks: [
+                Block(kind: .title, runs: [InlineRun(text: "Groceries")]),
+                Block(kind: .body, runs: [InlineRun(text: "milk")]),
+                Block(kind: .table, runs: [], payload: BlockPayload(table: TableData(rows: [["Keep", "me"]])))
+            ])
+            let context = try NoteEdit.context(doc)
+            let started = Date()
+            let text = try await ChatClient(apiKey: key).complete(
+                instructions: NoteEdit.instructions,
+                turns: [ChatTurn(role: "user", text: "Current note snapshot:\n\(context)\nUser request:\nChange the milk line to oat milk.")],
+                schema: AssistantReply.schema)
+            let reply = try JSONDecoder().decode(AssistantReply.self, from: Data(text.utf8))
+            let edited = try NoteEdit.applying(reply.operations, to: doc)
+            print(String(format: "PASS: live reply in %.1fs: %@", Date().timeIntervalSince(started), reply.reply))
+            guard edited.blocks.map(\.plainText).contains(where: { $0.lowercased().contains("oat milk") }), edited.blocks[2] == doc.blocks[2] else {
+                print("FAIL: live edit didn't produce the requested change safely: \(edited.blocks.map(\.plainText))"); return false
+            }
+            print("PASS: live edit validates, requested change present, table untouched")
+            do {
+                _ = try await ChatClient(apiKey: "oc_sk_invalid").complete(instructions: "x", turns: [ChatTurn(role: "user", text: "hi")], schema: AssistantReply.schema)
+                print("FAIL: invalid key was accepted"); return false
+            } catch { print("PASS: invalid key is reported: \(error.localizedDescription)") }
+            return true
+        } catch { print("FAIL: \(error.localizedDescription)"); return false }
+    }
+
+    static func run() async -> Bool {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("notas-assistant-test-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -14,74 +45,6 @@ enum AssistantSelfTest {
             print("PASS: \(label)")
         }
         do {
-            if realCodex {
-                let connection = CodexConnection(home: root.appendingPathComponent("Codex"))
-                defer { connection.stop() }
-                try await connection.start()
-                try check(true, "real Codex handshake and denied private read")
-                let config = try await connection.request("config/read", [:])
-                let effective = config["config"] as? [String: Any] ?? [:]
-                try check(effective["default_permissions"] as? String == "notas", "effective named permission profile")
-                let features = effective["features"] as? [String: Any] ?? [:]
-                try check(features["shell_tool"] as? Bool == false && features["apps"] as? Bool == false && features["hooks"] as? Bool == false,
-                          "effective command, connector, and hook restrictions")
-                let result = try await connection.request("command/exec", ["command": ["/usr/bin/env"], "cwd": connection.scratch.path,
-                                                                            "permissionProfile": "notas", "timeoutMs": 3000])
-                let environment = result["stdout"] as? String ?? ""
-                try check(!environment.contains("CODEX_HOME=") && !environment.contains("OPENAI_API_KEY=") && !environment.contains("T3_"),
-                          "tool environment excludes host credentials and orchestration variables")
-                let sentinel = root.appendingPathComponent("note-b.txt")
-                try Data("NOTE_B_SENTINEL".utf8).write(to: sentinel)
-                let denied = try await connection.request("command/exec", ["command": ["/bin/cat", sentinel.path],
-                                                                            "cwd": connection.scratch.path, "permissionProfile": "notas", "timeoutMs": 3000])
-                try check(denied["exitCode"] as? Int != 0 && !(denied["stdout"] as? String ?? "").contains("NOTE_B_SENTINEL"),
-                          "neighbor note cannot be read")
-                let write = try await connection.request("command/exec", ["command": ["/usr/bin/touch", connection.scratch.appendingPathComponent("write-probe").path],
-                                                                           "cwd": connection.scratch.path, "permissionProfile": "notas", "timeoutMs": 3000])
-                try check(write["exitCode"] as? Int != 0, "scratch writes denied")
-                // OpenCode route: real Codex, local stand-in server. No account, network service, or real key involved.
-                connection.stop()
-                let mock = Process(), pipe = Pipe()
-                let requests = root.appendingPathComponent("mock-requests.log")
-                mock.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                mock.arguments = ["python3", "-I", FileManager.default.currentDirectoryPath + "/scripts/fixtures/mock-responses.py", requests.path]
-                mock.standardOutput = pipe
-                try mock.run()
-                defer { mock.terminate() }
-                let port = String(data: pipe.fileHandleForReading.availableData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let keySentinel = "notas-opencode-sentinel-key"
-                let route = CodexConnection(home: root.appendingPathComponent("Codex-OpenCode"), provider: .opencode, apiKey: keySentinel)
-                route.baseURL = "http://127.0.0.1:\(port)/v1"
-                defer { route.stop() }
-                try await route.start()
-                let config2 = try await route.request("config/read", [:])
-                try check((config2["config"] as? [String: Any])?["model_provider"] as? String == "opencode", "OpenCode provider is the effective provider")
-                let env2 = try await route.request("command/exec", ["command": ["/usr/bin/env"], "cwd": route.scratch.path,
-                                                                     "permissionProfile": "notas", "timeoutMs": 3000])
-                let tools = env2["stdout"] as? String ?? ""
-                try check(!tools.contains(keySentinel) && !tools.contains("OPENCODE_API_KEY"), "OpenCode key never reaches tool commands")
-                let started = try await route.request("thread/start", ["model": "gpt-6-luna", "permissions": "notas", "approvalPolicy": "never",
-                                                                        "cwd": route.scratch.path, "baseInstructions": "Reply with JSON."])
-                guard let thread = (started["thread"] as? [String: Any])?["id"] as? String else { throw AssistantError.message("FAIL: no thread") }
-                let finished = Task { @MainActor () -> String in
-                    for _ in 0..<200 {
-                        if let line = (try? String(contentsOf: requests, encoding: .utf8))?.split(separator: "\n").first { return String(line) }
-                        try? await Task.sleep(for: .milliseconds(50))
-                    }
-                    return ""
-                }
-                _ = try await route.request("turn/start", ["threadId": thread, "model": "gpt-6-luna", "effort": "medium", "permissions": "notas",
-                                                           "approvalPolicy": "never", "outputSchema": AssistantReply.schema,
-                                                           "input": [["type": "text", "text": "hello"]]], timeout: 30)
-                let seen = (try? JSONSerialization.jsonObject(with: Data(await finished.value.utf8))) as? [String: Any] ?? [:]
-                try check(seen["authorization"] as? String == "Bearer \(keySentinel)", "OpenCode key is sent only as the provider bearer token")
-                try check((seen["session"] as? String)?.isEmpty == false, "OpenCode session header is sent")
-                try check(seen["model"] as? String == "gpt-6-luna" && seen["effort"] as? String == "medium", "Luna at medium reasoning is requested")
-                try check((seen["path"] as? String)?.hasSuffix("/responses") == true, "Responses API is used")
-                print("✓ \(passes) live Codex checks passed; no sign-in or inference requested")
-                return true
-            }
-
             let realService = AssistantKeychain.service
             AssistantKeychain.service = "notas.assistant.test.\(UUID())"
             defer { AssistantKeychain.delete(); AssistantKeychain.service = realService }
@@ -137,15 +100,34 @@ enum AssistantSelfTest {
             try check(editor.document == edited, "Redo restores assistant change")
             editor.load(doc)
 
+            let mock = Process(), pipe = Pipe()
+            let requests = root.appendingPathComponent("mock-requests.log")
+            mock.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            mock.arguments = ["python3", "-I", FileManager.default.currentDirectoryPath + "/scripts/fixtures/mock-responses.py", requests.path]
+            mock.standardOutput = pipe
+            try mock.run()
+            defer { mock.terminate() }
+            let port = String(data: pipe.fileHandleForReading.availableData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let assistant = NoteAssistant(app: app, storageRoot: root.appendingPathComponent("Chat"))
-            assistant.binaryPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("scripts/fixtures/fake-codex.py").path
-            await assistant.connect()
-            try check(assistant.connected && assistant.modelAvailable, "fake server authenticates and advertises Sol medium")
+            assistant.baseURL = URL(string: "http://127.0.0.1:\(port)/v1")!
+            try check(!assistant.hasKey || ProcessInfo.processInfo.environment["OPENCODE_API_KEY"] != nil, "no key means chat is not ready")
+            assistant.saveKey("bad key with spaces")
+            try check(!assistant.hasKey && assistant.error != nil, "malformed key is rejected before storing")
+            assistant.error = nil
+            assistant.saveKey("test-opencode-key")
+            try check(assistant.hasKey, "valid key is accepted")
             assistant.setDraft("Improve this", for: note.id)
             assistant.send(note.id)
             try await waitUntil { !assistant.busyNotes.contains(note.id) }
             let reply = assistant.session(for: note.id).messages.last
-            try check(reply?.text == "Here is a clearer version.", "production transport handles fragmented JSONL and empty completion items")
+            try check(reply?.text == "Here is a clearer version.", "reply is read from the Responses payload")
+            let seen = ((try? String(contentsOf: requests, encoding: .utf8)) ?? "").split(separator: "\n").compactMap {
+                (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+            }
+            try check(seen.first?["authorization"] as? String == "Bearer test-opencode-key" && (seen.first?["session"] as? String)?.isEmpty == false,
+                      "request carries the bearer key and OpenCode session header")
+            try check(seen.first?["model"] as? String == "gpt-6-luna" && seen.first?["effort"] as? String == "medium" && seen.first?["strict"] as? Bool == true
+                      && (seen.first?["path"] as? String)?.hasSuffix("/responses") == true, "Luna at medium with a strict JSON schema is requested")
             guard let proposal = reply?.proposal else { throw AssistantError.message("Missing proposal") }
             try check(editor.document == doc, "generation never mutates the note")
 
@@ -168,6 +150,25 @@ enum AssistantSelfTest {
             app.open(note.id)
             assistant.error = nil
             assistant.setDraft("Keep this draft", for: other.id)
+            // History is sent on follow-ups; a rejected key surfaces an actionable message; Stop cancels cleanly.
+            editor.load(doc)
+            assistant.setDraft("Follow up", for: note.id)
+            assistant.send(note.id)
+            try await waitUntil { !assistant.busyNotes.contains(note.id) }
+            let after = ((try? String(contentsOf: requests, encoding: .utf8)) ?? "").split(separator: "\n").count
+            try check(after == 2, "one request per message")
+            assistant.setDraft("FAIL401", for: note.id)
+            assistant.send(note.id)
+            try await waitUntil { !assistant.busyNotes.contains(note.id) }
+            try check(assistant.session(for: note.id).messages.last?.text.contains("rejected the API key") == true, "rejected key explains how to recover")
+            assistant.setDraft("SLOW", for: note.id)
+            assistant.send(note.id)
+            try await Task.sleep(for: .milliseconds(300))
+            try check(assistant.busyNotes.contains(note.id), "slow reply keeps the note busy")
+            assistant.stop(note.id)
+            try check(!assistant.busyNotes.contains(note.id) && assistant.session(for: note.id).messages.last?.text.contains("Stopped") == true, "Stop ends the request without changes")
+            try await Task.sleep(for: .milliseconds(300))
+            try check(editor.document == doc && assistant.session(for: note.id).messages.last?.role == .notice, "late reply after Stop is discarded")
             assistant.newConversation(note.id)
             try check(assistant.archives.contains { $0.noteID == note.id } && assistant.session(for: other.id).draft == "Keep this draft", "new conversation archives history without touching another note")
             assistant.shutdown()

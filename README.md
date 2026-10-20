@@ -36,7 +36,17 @@ Review suggested edits with **Before** and **After** previews. Accept one change
 
 Add your **OpenCode API key** in the chat sidebar. Notas stores it in the macOS Keychain. Sending a message shares the current note's text and conversation with OpenCode and the selected model provider. Attachment files stay on your Mac. See [note chat details](design/NOTE_ASSISTANT.md) for model behavior and storage.
 
-## Get started
+## Install
+
+Requires an Apple Silicon Mac on macOS 26. Paste this in Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Slopez2023/notas/main/scripts/install.sh | bash
+```
+
+It downloads the latest release into `~/Applications` and opens Notas. The release build is not notarized, so the share extension and widgets are not included; build from source with an Apple signing identity for those.
+
+## Build from source
 
 Requires Apple Silicon, macOS 26, and the Xcode Command Line Tools. Extension signing and installation are covered in [Enable sharing and widgets](docs/enable-extensions.md).
 

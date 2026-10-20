@@ -10,9 +10,11 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Show runner
+        run: sw_vers; ls /Library/Developer/CommandLineTools/SDKs
       - name: Build unsigned release app
         run: NOTAS_SIGNING_IDENTITY=- scripts/build-app.sh release
       - name: Zip app

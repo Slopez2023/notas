@@ -31,15 +31,18 @@ final class NoteAssistant {
     private(set) var connecting = false
     private(set) var signingIn = false
     private(set) var account: String?
+    private(set) var provider: AssistantProvider
     private(set) var modelAvailable = false
-    private(set) var status = "Connect your ChatGPT account to chat about this note."
+    private(set) var status = "Connect an account to chat about this note."
+    var modelLabel: String { provider.modelName }
     var error: String?
     var binaryPath: String {
         didSet { app?.defaults.set(binaryPath, forKey: "codexExecutable") }
     }
     private var partition: UUID
     @ObservationIgnored private weak var app: AppState?
-    @ObservationIgnored private let connection: CodexConnection
+    @ObservationIgnored private var connection: CodexConnection
+    @ObservationIgnored private let codexHomes: URL
     @ObservationIgnored private let stateURL: URL
     @ObservationIgnored private let io = DispatchQueue(label: "notas.assistant.persistence")
     @ObservationIgnored private var resumed: Set<String> = []
@@ -53,6 +56,7 @@ final class NoteAssistant {
         let version: Int
         let partition: UUID
         let account: String?
+        let provider: AssistantProvider?
         let sessions: [NoteChatSession]
         let archives: [NoteChatSession]
     }
@@ -65,17 +69,26 @@ final class NoteAssistant {
         let support = storageRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Notas/Assistant/\(identity)", isDirectory: true)
         stateURL = support.appendingPathComponent("sessions.json")
-        connection = CodexConnection(home: support.appendingPathComponent("Codex", isDirectory: true))
+        codexHomes = support
+        let chosen = AssistantProvider(rawValue: app.defaults.string(forKey: "assistantProvider") ?? "") ?? .chatgpt
+        provider = chosen
+        connection = CodexConnection(home: support.appendingPathComponent(chosen == .chatgpt ? "Codex" : "Codex-OpenCode", isDirectory: true),
+                                     provider: chosen, apiKey: chosen == .opencode ? AssistantKeychain.read() : nil)
         partition = UUID()
         if let data = try? Data(contentsOf: stateURL) {
             do {
                 let saved = try JSONDecoder().decode(Saved.self, from: data)
                 guard saved.version == 1 else { throw AssistantError.message("Chat history uses an unsupported version.") }
                 partition = saved.partition; account = saved.account
+                if saved.provider != nil && saved.provider != chosen { account = nil }
                 sessions = Dictionary(saved.sessions.map { ($0.noteID, $0) }, uniquingKeysWith: { first, _ in first })
                 archives = saved.archives
             } catch { self.error = "Chat history couldn't be loaded. The saved file has been kept. \(error.localizedDescription)" }
         }
+        wire(connection)
+    }
+
+    private func wire(_ connection: CodexConnection) {
         connection.onEvent = { [weak self] method, params in self?.receive(method, params) }
         connection.onDisconnect = { [weak self] reason in
             guard let self else { return }
@@ -86,6 +99,45 @@ final class NoteAssistant {
             self.deadlines.values.forEach { $0.cancel() }; self.deadlines.removeAll()
             self.status = reason
         }
+    }
+
+    var hasOpenCodeKey: Bool { AssistantKeychain.read() != nil }
+
+    /// Switches the account route. Conversations never carry across routes, so the current ones are archived.
+    func useProvider(_ next: AssistantProvider, key: String? = nil) async {
+        guard busyNotes.isEmpty, !connecting else { return }
+        error = nil
+        if let key, next == .opencode {
+            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed.unicodeScalars.allSatisfy({ $0.isASCII && $0.value > 32 }) else {
+                error = "That doesn't look like an API key. Paste the key exactly as OpenCode shows it."; return
+            }
+            do { try AssistantKeychain.save(trimmed) } catch { self.error = error.localizedDescription; return }
+        }
+        if next == .opencode, AssistantKeychain.read() == nil { error = "Add your OpenCode API key first."; return }
+        let changed = next != provider || key != nil
+        connection.stop(reason: "Switching accounts…")
+        if changed { stopAll(); archivePartition() }
+        provider = next
+        app?.defaults.set(next.rawValue, forKey: "assistantProvider")
+        connection = CodexConnection(home: codexHomes.appendingPathComponent(next == .chatgpt ? "Codex" : "Codex-OpenCode", isDirectory: true),
+                                     provider: next, apiKey: next == .opencode ? AssistantKeychain.read() : nil)
+        wire(connection)
+        account = nil; modelAvailable = false; connected = false
+        status = next == .opencode ? "Connecting with your OpenCode key…" : "Sign in with ChatGPT to use your subscription."
+        persist()
+        await connect()
+    }
+
+    func removeOpenCodeKey() async {
+        guard busyNotes.isEmpty else { return }
+        AssistantKeychain.delete()
+        connection.stop(reason: "Removed the OpenCode key.")
+        stopAll(); archivePartition()
+        account = nil; modelAvailable = false; connected = false
+        status = "Removed the OpenCode key."
+        persist()
+        await useProvider(.chatgpt)
     }
 
     func session(for noteID: UUID) -> NoteChatSession {
@@ -159,6 +211,16 @@ final class NoteAssistant {
     }
 
     private func refreshAccount() async throws {
+        if provider == .opencode {
+            // The key is the account: there is no browser sign-in. The first reply proves the key and model;
+            // a rejected key is reported then, with a way to replace it.
+            if let previous = account, previous != "OpenCode Go key" { archivePartition() }
+            account = "OpenCode Go key"
+            modelAvailable = true
+            status = "\(provider.modelName) · medium reasoning · OpenCode Go"
+            persist()
+            return
+        }
         let result = try await connection.request("account/read", [:])
         guard let info = result["account"] as? [String: Any], info["type"] as? String == "chatgpt" else {
             account = nil; modelAvailable = false
@@ -174,13 +236,13 @@ final class NoteAssistant {
             var params: [String: Any] = ["limit": 100]
             if let cursor { params["cursor"] = cursor }
             let result = try await connection.request("model/list", params)
-            for model in result["data"] as? [[String: Any]] ?? [] where model["model"] as? String == CodexConnection.model {
+            for model in result["data"] as? [[String: Any]] ?? [] where model["model"] as? String == provider.model {
                 let efforts = model["supportedReasoningEfforts"] as? [[String: Any]] ?? []
                 modelAvailable = efforts.contains { $0["reasoningEffort"] as? String == "medium" }
             }
             cursor = result["nextCursor"] as? String
         } while cursor != nil && !modelAvailable
-        status = modelAvailable ? "Sol · medium reasoning" : "Sol medium isn't available. Check your ChatGPT plan and Codex version."
+        status = modelAvailable ? "\(provider.modelName) · medium reasoning" : "\(provider.modelName) medium isn't available. Check your ChatGPT plan and Codex version."
         persist()
     }
 
@@ -221,7 +283,7 @@ final class NoteAssistant {
                         return "Proposal \(proposal.id): \(proposal.state.rawValue)"
                     }.suffix(10).joined(separator: "\n") ?? ""
                     let result = try await self.connection.request("turn/start", [
-                        "threadId": thread, "model": CodexConnection.model, "effort": "medium", "permissions": "notas",
+                        "threadId": thread, "model": provider.model, "effort": "medium", "permissions": "notas",
                         "approvalPolicy": "never", "clientUserMessageId": user.id.uuidString,
                         "outputSchema": AssistantReply.schema,
                         "input": [["type": "text", "text": "Current note snapshot:\n\(context)\nRecent proposal decisions:\n\(applied)\nUser request:\n\(prompt)"]]
@@ -243,7 +305,7 @@ final class NoteAssistant {
     }
 
     private func prepareThread(_ noteID: UUID) async throws -> String {
-        var params: [String: Any] = ["model": CodexConnection.model, "permissions": "notas", "approvalPolicy": "never",
+        var params: [String: Any] = ["model": provider.model, "permissions": "notas", "approvalPolicy": "never",
                                      "cwd": connection.scratch.path, "baseInstructions": NoteEdit.instructions]
         if let thread = sessions[noteID]?.threadID {
             if !resumed.contains(thread) {
@@ -373,7 +435,7 @@ final class NoteAssistant {
             return
         }
         if method == "account/updated" {
-            if params["authMode"] is NSNull { stopAll(); account = nil; modelAvailable = false; persist() }
+            if provider == .chatgpt, params["authMode"] is NSNull { stopAll(); account = nil; modelAvailable = false; persist() }
             return
         }
         guard let thread = params["threadId"] as? String,
@@ -392,7 +454,7 @@ final class NoteAssistant {
             deadlines.removeValue(forKey: noteID)?.cancel()
             persist()
         } else if method == "error", params["willRetry"] as? Bool != true {
-            error = (params["error"] as? [String: Any])?["message"] as? String ?? "Codex couldn't complete this request."
+            error = friendly((params["error"] as? [String: Any])?["message"] as? String) ?? "Codex couldn't complete this request."
         } else if method == "notas/blockedTool" {
             stop(noteID)
             addNotice("Codex requested a tool outside this note's permissions. The request was blocked.", to: noteID)
@@ -404,7 +466,7 @@ final class NoteAssistant {
         sessions[noteID]?.awaitingReply = false
         let state = turn["status"] as? String ?? "failed"
         guard state == "completed" else {
-            let detail = (turn["error"] as? [String: Any])?["message"] as? String
+            let detail = friendly((turn["error"] as? [String: Any])?["message"] as? String)
             addNotice(detail ?? (state == "interrupted" ? "Stopped. No changes were applied." : "Codex couldn't finish this reply. No changes were applied."), to: noteID)
             return
         }
@@ -430,6 +492,19 @@ final class NoteAssistant {
         for item in agents { if let id = item["id"] as? String { finalText[id] = nil } }
         finalText[key] = nil
         snapshots[noteID] = nil
+    }
+
+    /// Makes a rejected OpenCode key actionable without echoing anything the server sent back about it.
+    private func friendly(_ message: String?) -> String? {
+        guard provider == .opencode, let message else { return message }
+        let lower = message.lowercased()
+        if lower.contains("401") || lower.contains("403") || lower.contains("unauthorized") || lower.contains("api key") || lower.contains("invalid") && lower.contains("key") {
+            return "OpenCode rejected the API key. Create a new key in the OpenCode Console, then replace it in chat settings."
+        }
+        if lower.contains("429") || lower.contains("usage") || lower.contains("limit") {
+            return "Your OpenCode Go usage limit was reached. Try again later or check your plan."
+        }
+        return message
     }
 
     private func startDeadline(_ noteID: UUID) {
@@ -468,7 +543,7 @@ final class NoteAssistant {
     }
 
     private func encodedState() throws -> Data {
-        try JSONEncoder().encode(Saved(version: 1, partition: partition, account: account,
+        try JSONEncoder().encode(Saved(version: 1, partition: partition, account: account, provider: provider,
                                        sessions: Array(sessions.values), archives: archives))
     }
 

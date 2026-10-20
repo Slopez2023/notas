@@ -1,8 +1,22 @@
 import Foundation
 
+enum AssistantProvider: String, Codable {
+    case chatgpt, opencode
+
+    var model: String { self == .chatgpt ? "gpt-6.1-sol" : "gpt-6-luna" }
+    var modelName: String { self == .chatgpt ? "Sol" : "Luna" }
+    var serviceName: String { self == .chatgpt ? "OpenAI" : "OpenCode" }
+    static let opencodeURL = "https://opencode.ai/inference/go/openai/v1"
+    static let keyVariable = "OPENCODE_API_KEY"
+}
+
 @MainActor
 final class CodexConnection {
-    static let model = "gpt-6.1-sol"
+    let provider: AssistantProvider
+    var model: String { provider.model }
+    /// Delivered only to the child's environment. Never logged, never put on the command line.
+    var apiKey: String?
+    var baseURL = AssistantProvider.opencodeURL
     var onEvent: ((String, [String: Any]) -> Void)?
     var onDisconnect: ((String) -> Void)?
     private var process: Process?
@@ -21,8 +35,10 @@ final class CodexConnection {
     let scratch: URL
     var executable: URL?
 
-    init(home: URL) {
+    init(home: URL, provider: AssistantProvider = .chatgpt, apiKey: String? = nil) {
         self.home = home
+        self.provider = provider
+        self.apiKey = apiKey
         scratch = home.deletingLastPathComponent().appendingPathComponent("Scratch", isDirectory: true)
     }
 
@@ -44,6 +60,16 @@ final class CodexConnection {
         ]
     }
 
+    var providerOverrides: [String] {
+        guard provider == .opencode else { return [] }
+        let session = UUID().uuidString.lowercased()
+        return ["model_provider=\"opencode\"",
+                "model_providers.opencode={name=\"OpenCode Go\", base_url=\"\(baseURL)\", env_key=\"\(AssistantProvider.keyVariable)\", " +
+                "wire_api=\"responses\", requires_openai_auth=false, supports_websockets=false, " +
+                "http_headers={\"x-opencode-session\"=\"\(session)\"}}",
+                "model=\"\(model)\""]
+    }
+
     var permissionOverrides: [String] {
         let path = scratch.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         return ["permissions.notas.filesystem={\":minimal\"=\"read\", \"\(path)\"=\"read\"}",
@@ -61,10 +87,14 @@ final class CodexConnection {
         let proc = Process()
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
         proc.executableURL = binary
-        proc.arguments = ["app-server", "--listen", "stdio://"] + (Self.policyOverrides + permissionOverrides).flatMap { ["-c", $0] }
+        proc.arguments = ["app-server", "--listen", "stdio://"] + (Self.policyOverrides + providerOverrides + permissionOverrides).flatMap { ["-c", $0] }
         var env: [String: String] = [:]
         for key in ["HOME", "USER", "TMPDIR", "LANG", "PATH", "SHELL"] { env[key] = ProcessInfo.processInfo.environment[key] }
         env["CODEX_HOME"] = home.path
+        if provider == .opencode {
+            guard let apiKey, !apiKey.isEmpty else { throw AssistantError.message("Add your OpenCode API key first.") }
+            env[AssistantProvider.keyVariable] = apiKey
+        }
         proc.environment = env
         proc.currentDirectoryURL = scratch
         proc.standardInput = stdin; proc.standardOutput = stdout; proc.standardError = stderr

@@ -6,6 +6,7 @@ Implementation status:
 
 - Done and covered by `scripts/test-assistant.sh` (20 checks: edit reducer, editor Undo/Redo, stale-proposal rejection, session isolation, persistence, fake app-server transport) and `scripts/test-assistant.sh --live` (6 checks against the real `codex` binary: handshake, sandbox denial of private reads and scratch writes, command/connector/hook restrictions, sentinel credentials absent from the tool environment). `scripts/test.sh` still passes its 203 checks.
 - Not yet verified: browser sign-in, subscribed access to `gpt-6.1-sol` at `medium`, and a real completed inference. Earlier attempts to continue ended on a ChatGPT usage limit; the live checks deliberately request no sign-in or inference. Verify these manually in the app before relying on the feature.
+- OpenCode route: the chat can instead use an OpenCode Go API key (Keychain-stored, passed only in the Codex child's environment) with `gpt-6-luna` at `medium` over `https://opencode.ai/inference/go/openai/v1` (Responses API; the endpoint requires an `x-opencode-session` header, which Notas sends). Sol is not offered by OpenCode, so this route uses Luna and says so in the UI. Verified against the real Codex binary and a local stand-in server (`--check-codex`: bearer token, session header, model, effort, key absent from tool environment); not yet verified against OpenCode itself with a real key.
 - Not done: Sign in with ChatGPT (app-owned OAuth) route, App Store packaging, iCloud external-edit reconciliation.
 
 ## Product behavior

@@ -39,9 +39,57 @@ enum AssistantSelfTest {
                 let write = try await connection.request("command/exec", ["command": ["/usr/bin/touch", connection.scratch.appendingPathComponent("write-probe").path],
                                                                            "cwd": connection.scratch.path, "permissionProfile": "notas", "timeoutMs": 3000])
                 try check(write["exitCode"] as? Int != 0, "scratch writes denied")
+                // OpenCode route: real Codex, local stand-in server. No account, network service, or real key involved.
+                connection.stop()
+                let mock = Process(), pipe = Pipe()
+                let requests = root.appendingPathComponent("mock-requests.log")
+                mock.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                mock.arguments = ["python3", "-I", FileManager.default.currentDirectoryPath + "/scripts/fixtures/mock-responses.py", requests.path]
+                mock.standardOutput = pipe
+                try mock.run()
+                defer { mock.terminate() }
+                let port = String(data: pipe.fileHandleForReading.availableData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let keySentinel = "notas-opencode-sentinel-key"
+                let route = CodexConnection(home: root.appendingPathComponent("Codex-OpenCode"), provider: .opencode, apiKey: keySentinel)
+                route.baseURL = "http://127.0.0.1:\(port)/v1"
+                defer { route.stop() }
+                try await route.start()
+                let config2 = try await route.request("config/read", [:])
+                try check((config2["config"] as? [String: Any])?["model_provider"] as? String == "opencode", "OpenCode provider is the effective provider")
+                let env2 = try await route.request("command/exec", ["command": ["/usr/bin/env"], "cwd": route.scratch.path,
+                                                                     "permissionProfile": "notas", "timeoutMs": 3000])
+                let tools = env2["stdout"] as? String ?? ""
+                try check(!tools.contains(keySentinel) && !tools.contains("OPENCODE_API_KEY"), "OpenCode key never reaches tool commands")
+                let started = try await route.request("thread/start", ["model": "gpt-6-luna", "permissions": "notas", "approvalPolicy": "never",
+                                                                        "cwd": route.scratch.path, "baseInstructions": "Reply with JSON."])
+                guard let thread = (started["thread"] as? [String: Any])?["id"] as? String else { throw AssistantError.message("FAIL: no thread") }
+                let finished = Task { @MainActor () -> String in
+                    for _ in 0..<200 {
+                        if let line = (try? String(contentsOf: requests, encoding: .utf8))?.split(separator: "\n").first { return String(line) }
+                        try? await Task.sleep(for: .milliseconds(50))
+                    }
+                    return ""
+                }
+                _ = try await route.request("turn/start", ["threadId": thread, "model": "gpt-6-luna", "effort": "medium", "permissions": "notas",
+                                                           "approvalPolicy": "never", "outputSchema": AssistantReply.schema,
+                                                           "input": [["type": "text", "text": "hello"]]], timeout: 30)
+                let seen = (try? JSONSerialization.jsonObject(with: Data(await finished.value.utf8))) as? [String: Any] ?? [:]
+                try check(seen["authorization"] as? String == "Bearer \(keySentinel)", "OpenCode key is sent only as the provider bearer token")
+                try check((seen["session"] as? String)?.isEmpty == false, "OpenCode session header is sent")
+                try check(seen["model"] as? String == "gpt-6-luna" && seen["effort"] as? String == "medium", "Luna at medium reasoning is requested")
+                try check((seen["path"] as? String)?.hasSuffix("/responses") == true, "Responses API is used")
                 print("✓ \(passes) live Codex checks passed; no sign-in or inference requested")
                 return true
             }
+
+            let realService = AssistantKeychain.service
+            AssistantKeychain.service = "notas.assistant.test.\(UUID())"
+            defer { AssistantKeychain.delete(); AssistantKeychain.service = realService }
+            try AssistantKeychain.save("first-key")
+            try AssistantKeychain.save("second-key")
+            try check(AssistantKeychain.read() == "second-key", "Keychain stores and replaces the OpenCode key")
+            AssistantKeychain.delete()
+            try check(AssistantKeychain.read() == nil, "Keychain removes the OpenCode key")
 
             let doc = NoteDocument(blocks: [
                 Block(kind: .title, runs: [InlineRun(text: "Test")]),

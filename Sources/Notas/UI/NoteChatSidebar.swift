@@ -6,6 +6,7 @@ struct NoteChatSidebar: View {
     @Environment(AppState.self) private var app
     @State private var showSettings = false
     @State private var historyID: UUID?
+    @State private var keyDraft = ""
     @FocusState private var composing: Bool
 
     private var assistant: NoteAssistant { app.noteAssistant }
@@ -64,8 +65,13 @@ struct NoteChatSidebar: View {
                     Divider()
                     Button("Chat settings") { showSettings.toggle() }
                     if assistant.account != nil {
-                        Button("Sign out of chat") { Task { await assistant.signOut() } }
-                            .disabled(!assistant.busyNotes.isEmpty)
+                        if assistant.provider == .chatgpt {
+                            Button("Sign out of chat") { Task { await assistant.signOut() } }
+                                .disabled(!assistant.busyNotes.isEmpty)
+                        } else {
+                            Button("Remove OpenCode key") { Task { await assistant.removeOpenCodeKey() } }
+                                .disabled(!assistant.busyNotes.isEmpty)
+                        }
                     }
                 } label: { Image(systemName: "ellipsis").frame(width: 22, height: 24) }
                     .menuStyle(.borderlessButton).fixedSize()
@@ -77,7 +83,7 @@ struct NoteChatSidebar: View {
                 .font(.system(size: 12, weight: .medium)).foregroundStyle(style.secondary).lineLimit(1)
             HStack(spacing: 5) {
                 Circle().fill(assistant.connected && assistant.account != nil ? Color.green : style.tertiary).frame(width: 5, height: 5)
-                Text(isHistory ? "Earlier conversation · read only" : "Sol · medium · this note only")
+                Text(isHistory ? "Earlier conversation · read only" : "\(assistant.modelLabel) · medium · this note only")
                     .font(.system(size: 10.5)).foregroundStyle(style.tertiary)
             }
         }
@@ -88,8 +94,25 @@ struct NoteChatSidebar: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("A writing partner for this note")
                 .font(.system(size: 15, weight: .semibold, design: .serif))
-            Text("Chat using your ChatGPT subscription. Sending a message shares this note's text with OpenAI. Photos and files stay on your Mac.")
+            Text("Sending a message shares this note's text with the service you pick. Photos and files stay on your Mac.")
                 .font(.system(size: 12)).foregroundStyle(style.secondary).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("OpenCode API key").font(.system(size: 11, weight: .semibold))
+                SecureField("Paste your key", text: $keyDraft)
+                    .textFieldStyle(.roundedBorder).font(.system(size: 12))
+                    .onSubmit(saveKey)
+                Button(action: saveKey) {
+                    HStack {
+                        if assistant.connecting && assistant.provider == .opencode { ProgressView().controlSize(.small) }
+                        Text(assistant.connecting && assistant.provider == .opencode ? "Connecting…" : assistant.hasOpenCodeKey ? "Use saved key, or replace it" : "Use OpenCode key")
+                    }.frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(assistant.connecting || (keyDraft.isEmpty && !assistant.hasOpenCodeKey))
+                Text("Stored in your Keychain. Uses Luna at medium reasoning through OpenCode Go.")
+                    .font(.system(size: 10.5)).foregroundStyle(style.tertiary)
+            }
+            Divider().opacity(0.35)
             if assistant.signingIn {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -100,16 +123,17 @@ struct NoteChatSidebar: View {
             } else {
                 Button {
                     Task {
+                        if assistant.provider != .chatgpt { await assistant.useProvider(.chatgpt) }
                         await assistant.connect()
                         if assistant.connected && assistant.account == nil { await assistant.signIn() }
                     }
                 } label: {
                     HStack {
-                        if assistant.connecting { ProgressView().controlSize(.small) }
-                        Text(assistant.connecting ? "Connecting…" : "Continue with ChatGPT")
+                        if assistant.connecting && assistant.provider == .chatgpt { ProgressView().controlSize(.small) }
+                        Text("Or continue with ChatGPT (Sol)")
                     }.frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent).disabled(assistant.connecting)
+                .buttonStyle(.bordered).disabled(assistant.connecting)
             }
             Button("Codex CLI setup") { showSettings = true }.buttonStyle(.link).font(.caption)
         }
@@ -117,10 +141,16 @@ struct NoteChatSidebar: View {
         .background(style.surface.opacity(0.5))
     }
 
+    private func saveKey() {
+        let key = keyDraft
+        keyDraft = ""
+        Task { await assistant.useProvider(.opencode, key: key.isEmpty ? nil : key) }
+    }
+
     private var settings: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let account = assistant.account { Text(account).font(.caption).textSelection(.enabled) }
-            Text("Codex CLI 0.163.x · separate Notas login")
+            Text(assistant.provider == .chatgpt ? "Codex CLI 0.163.x · separate Notas login" : "Codex CLI 0.163.x · OpenCode Go key from your Keychain")
                 .font(.caption).foregroundStyle(style.secondary)
             Text(assistant.binaryPath.isEmpty ? (CodexConnection.findExecutable()?.path ?? "Codex CLI not found") : assistant.binaryPath)
                 .font(.system(size: 10, design: .monospaced)).lineLimit(2).textSelection(.enabled)
@@ -154,7 +184,7 @@ struct NoteChatSidebar: View {
                     }
                     ForEach(displayed.messages) { message in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(message.role == .user ? "You" : message.role == .assistant ? "Sol" : "Conversation")
+                            Text(message.role == .user ? "You" : message.role == .assistant ? assistant.modelLabel : "Conversation")
                                 .font(.system(size: 10, weight: .semibold)).foregroundStyle(style.tertiary)
                             Text(message.text)
                                 .font(.system(size: 13)).lineSpacing(4).textSelection(.enabled)

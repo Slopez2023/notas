@@ -780,7 +780,7 @@ enum SelfTest {
         let reloaded = LibraryStore(rootURL: dir)
         reloaded.load()
         check(reloaded.notes[note.id]?.title == "Sunday pasta", "notes persist to disk")
-        check(reloaded.notebooks.contains { $0.name == "Recipes" } || true, "notebooks persist (async write)")
+        check(reloaded.notebooks.contains { $0.name == "Recipes" }, "notebooks persist to disk")
 
         reloaded.deleteNotebook(nb.id)
         check(reloaded.notes[note.id]?.notebookID != nb.id, "deleting a notebook moves its notes")

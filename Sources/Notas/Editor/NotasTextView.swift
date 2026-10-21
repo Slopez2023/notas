@@ -799,9 +799,23 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         richTyping = nil
         flushRestyle()
         super.didChangeText()
+        // Placeholders are drawn outside TextKit's glyph invalidation. Redraw the whole
+        // transparent backing layer after the text state changes so the title placeholder
+        // cannot remain underneath the first typed word.
+        needsDisplay = true
         connectRichBlocks()
         onUserEdit?()
         updateSlashMenu()
+    }
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        needsDisplay = true
+    }
+
+    override func unmarkText() {
+        super.unmarkText()
+        needsDisplay = true
     }
 
     override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {

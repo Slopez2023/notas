@@ -18,6 +18,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Fonts"
 cp "$BIN" "$APP/Contents/MacOS/Notas"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
+cp scripts/install-update.sh "$APP/Contents/Resources/"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/" || true
 
 python3 scripts/build-extensions.py --app "$APP" --configuration "$CONFIG"

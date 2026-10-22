@@ -46,6 +46,8 @@ curl -fsSL https://raw.githubusercontent.com/Slopez2023/notas/main/scripts/insta
 
 It downloads the latest release into `~/Applications` and opens Notas. The release build is not notarized, so the share extension and widgets are not included; build from source with an Apple signing identity for those.
 
+After installing, choose **Notas → Check for Updates…** or use **Check for Updates…** in the menu-bar item. Notas downloads and installs newer tagged releases, then reopens itself.
+
 ## Build from source
 
 Requires Apple Silicon, macOS 26, and the Xcode Command Line Tools. Extension signing and installation are covered in [Enable sharing and widgets](docs/enable-extensions.md).

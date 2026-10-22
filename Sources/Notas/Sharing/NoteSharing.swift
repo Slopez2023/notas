@@ -115,11 +115,10 @@ struct ShareBarButton: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(app: app) }
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: "Share", image: NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: nil)!, target: context.coordinator, action: #selector(Coordinator.share(_:)))
-        button.imagePosition = .imageLeading
+        let button = NSButton(image: NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: nil)!, target: context.coordinator, action: #selector(Coordinator.share(_:)))
+        button.imagePosition = .imageOnly
         button.bezelStyle = .accessoryBarAction
         button.isBordered = false
-        button.font = .systemFont(ofSize: 11.5, weight: .medium)
         button.sendAction(on: .leftMouseDown)
         button.toolTip = "Send a copy with its colors, formatting, and photos (⇧⌘S)"
         button.setAccessibilityLabel("Share note")
@@ -128,7 +127,7 @@ struct ShareBarButton: NSViewRepresentable {
 
     func updateNSView(_ button: NSButton, context: Context) {
         button.isEnabled = app.activeNoteID != nil
-        button.contentTintColor = style.nsSecondary
+        button.contentTintColor = app.activeNoteID == nil ? style.nsTertiary : style.nsSecondary
         app.noteSharing.anchor = button
     }
 

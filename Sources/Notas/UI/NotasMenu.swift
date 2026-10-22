@@ -30,6 +30,8 @@ struct NotasMenu: View {
 
         Divider()
         Button("Open Notas") { showMainWindow() }
+        Button(delegate.updater.activityTitle) { delegate.updater.checkForUpdates() }
+            .disabled(delegate.updater.isBusy)
         shortcutMenu
         Divider()
         Button("Quit Notas") { NSApp.terminate(nil) }

@@ -13,20 +13,20 @@ struct TopBar: View {
             Spacer(minLength: 6)
             TabStrip(style: style)
             Spacer(minLength: 6)
-            HStack(spacing: 6) {
-                BarButton(label: "Chat", help: "Chat about this note (⌥⌘J)", isOn: app.isChatOpen, style: style) {
+            HStack(spacing: 4) {
+                BarButton(systemName: "bubble.left", help: "Chat about this note (⌥⌘J)", isOn: app.isChatOpen, style: style) {
                     withAnimation(.snappy(duration: 0.25)) { app.isChatOpen.toggle() }
                 }
                 ShareBarButton(app: app, style: style)
-                    .frame(width: 66, height: 26)
-                BarButton(label: "Aa", help: "Customize this note's look (⌥⌘L)", isOn: app.isStylePanelOpen, style: style) {
+                    .frame(width: 30, height: 30)
+                BarButton(systemName: "textformat", help: "Customize this note's look (⌥⌘L)", isOn: app.isStylePanelOpen, style: style) {
                     withAnimation(.snappy(duration: 0.25)) { app.isStylePanelOpen.toggle() }
                 }
-                BarButton(label: "⌘K", help: "Search and commands", isOn: app.isPaletteOpen, style: style) {
+                BarButton(systemName: "magnifyingglass", help: "Search and commands (⌘K)", isOn: app.isPaletteOpen, style: style) {
                     app.isPaletteOpen = true
                 }
             }
-            .frame(maxWidth: 210, alignment: .trailing)
+            .frame(maxWidth: 132, alignment: .trailing)
         }
         .padding(.horizontal, 12)
         .padding(.top, 3)
@@ -47,7 +47,7 @@ struct TopBar: View {
 }
 
 struct BarButton: View {
-    let label: String
+    let systemName: String
     let help: String
     var isOn = false
     let style: ResolvedStyle
@@ -56,15 +56,13 @@ struct BarButton: View {
 
     var body: some View {
         Button(action: action) {
-            Text(label)
-                .font(.system(size: 11.5, weight: .medium))
-                .lineLimit(1)
-                .fixedSize()
+            Image(systemName: systemName)
+                .font(.system(size: 13.5, weight: .medium))
                 .foregroundStyle(isOn ? style.text : style.tertiary.mix(with: style.text, by: hovering ? 0.5 : 0.25))
-                .frame(minWidth: 26, minHeight: 24)
-                .padding(.horizontal, 6)
-                .background(isOn ? style.accentColor.opacity(0.22) : style.surface.opacity(hovering ? 1 : 0.7),
-                            in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .frame(width: 30, height: 30)
+                .background(isOn ? style.accentColor.opacity(0.22) : (hovering ? style.surface.opacity(0.86) : .clear),
+                            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }

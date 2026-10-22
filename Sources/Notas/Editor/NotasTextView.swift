@@ -1095,7 +1095,6 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
     // MARK: Placeholder
 
     var placeholderTitle = "Title"
-    var placeholderBody = "Start writing…"
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -1104,14 +1103,6 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         if string.isEmpty {
             let attrs: [NSAttributedString.Key: Any] = [.font: styler.baseFont(for: .title), .foregroundColor: s.nsTertiary.withAlphaComponent(0.6)]
             (placeholderTitle as NSString).draw(at: NSPoint(x: origin.x, y: origin.y), withAttributes: attrs)
-        } else if !string.contains("\n"), let tlm = textLayoutManager {
-            var maxY: CGFloat = 0
-            tlm.enumerateTextLayoutFragments(from: tlm.documentRange.location, options: []) { f in
-                maxY = max(maxY, f.layoutFragmentFrame.maxY)
-                return true
-            }
-            let attrs: [NSAttributedString.Key: Any] = [.font: styler.baseFont(for: .body), .foregroundColor: s.nsTertiary.withAlphaComponent(0.7)]
-            (placeholderBody as NSString).draw(at: NSPoint(x: origin.x, y: origin.y + maxY + 4), withAttributes: attrs)
         }
     }
 

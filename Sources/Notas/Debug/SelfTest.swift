@@ -24,6 +24,7 @@ enum SelfTest {
         resizing()
         phase4()
         sharing()
+        updates()
         performance()
         print(failures == 0 ? "✓ \(passes) checks passed" : "✗ \(failures) failed, \(passes) passed")
         return failures == 0
@@ -33,6 +34,15 @@ enum SelfTest {
         do {
             if try condition() { passes += 1 } else { failures += 1; print("FAIL (line \(line)): \(message)") }
         } catch { failures += 1; print("FAIL (line \(line)): \(message): \(error)") }
+    }
+
+    private static func updates() {
+        check(UpdateVersion("v1.2.3")?.description == "1.2.3", "release versions accept a leading v")
+        let newer = UpdateVersion("1.10.0")
+        let older = UpdateVersion("1.9.9")
+        check(newer.map { candidate in older.map { candidate > $0 } ?? false } ?? false, "release versions compare numerically")
+        check(UpdateVersion("1.2") == UpdateVersion("1.2.0"), "missing release components compare as zero")
+        check(UpdateVersion("main") == nil, "non-version release tags are rejected")
     }
 
     // MARK: Codec

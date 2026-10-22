@@ -73,7 +73,7 @@ struct NotasApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 800)
         .commands {
-            NotasCommands(app: delegate.app)
+            NotasCommands(delegate: delegate)
             TextEditingCommands()
         }
         MenuBarExtra("Notas", systemImage: "square.and.pencil") {
@@ -86,6 +86,7 @@ struct NotasApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store: LibraryStore
     let app: AppState
+    let updater = UpdateController()
     private var keyMonitor: Any?
     private(set) var quickCapture: QuickCaptureController?
     private var integration: CaptureIntegration?
@@ -225,9 +226,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct NotasCommands: Commands {
-    let app: AppState
+    let delegate: AppDelegate
+
+    private var app: AppState { delegate.app }
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button(delegate.updater.activityTitle) { delegate.updater.checkForUpdates() }
+                .disabled(delegate.updater.isBusy)
+            Divider()
+        }
+
         CommandGroup(replacing: .newItem) {
             Button("Quick Note…") { app.showQuickCapture?() }
             Divider()

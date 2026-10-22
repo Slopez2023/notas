@@ -61,7 +61,7 @@ def generate(team):
         frameworks = add('frameworks:' + name, 'PBXFrameworksBuildPhase', buildActionMask=2147483647, files=[], runOnlyForDeploymentPostprocessing=0)
         resources = []
         if name == 'Notas':
-            for path, kind in [('Resources/Fonts', 'folder'), ('Resources/AppIcon.icns', 'image.icns')]:
+            for path, kind in [('Resources/Fonts', 'folder'), ('Resources/AppIcon.icns', 'image.icns'), ('scripts/install-update.sh', 'text.script.sh')]:
                 resources.append(add('resource-build:' + path, 'PBXBuildFile', fileRef=file(path, kind)))
         resource_phase = add('resources:' + name, 'PBXResourcesBuildPhase', buildActionMask=2147483647, files=resources, runOnlyForDeploymentPostprocessing=0)
         phases = [source_phase, frameworks, resource_phase]

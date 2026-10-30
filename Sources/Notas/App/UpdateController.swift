@@ -265,7 +265,9 @@ final class UpdateController {
         handedOffToInstaller = true
         pendingInstall = (arguments, work)
         activityTitle = "Installing Update…"
-        NSApp.terminate(nil)
+        // AppKit waits in a nested event loop for terminateLater. Schedule outside
+        // the main dispatch queue so that loop can run the async save task.
+        NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
     }
 
     /// Starts the helper once quitting is certain (called from applicationWillTerminate).

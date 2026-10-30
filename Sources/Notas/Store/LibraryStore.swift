@@ -1090,6 +1090,15 @@ final class LibraryStore {
             Result { try StoreDisk.publishCopy(of: source, as: local, id: fresh, in: notesURL) }
         }.get()
         if records[note.id] == nil { register(note, package: package, revision: revision) }
+        // Edits typed while the copy was being made belong to the local version too.
+        if let latest = notes[noteID], latest != local, notes[note.id] != nil {
+            mutate(note.id) { copy in
+                copy.document = latest.document
+                copy.tags = latest.tags
+                copy.pinned = latest.pinned
+                copy.style = latest.style
+            }
+        }
         // The disk version stays as the note; the local version is now its own note.
         if var current = records[noteID] {
             let stale = current.recoveries

@@ -35,7 +35,7 @@ enum StorageStabilityTests {
         await run("S9 evicted note.json is waiting, not corrupt") { try await evictedNoteJSON() }
         await run("S9 evicted download that arrives loads") { try await evictedDownloadArrives() }
         await run("S9 evicted notebooks.json is not missing") { try await evictedNotebooks() }
-        await run("S10 pinned or styled blank notes are kept") { try await discardRules() }
+        await run("S10 pinned blank notes are kept") { try await discardRules() }
         await run("S11 saved-aside notebook list is surfaced") { try await notebookRecoverySurfaced() }
         await run("S12 recovery copies never collide across runs") { try await recoveryNamesNeverCollide() }
         print(failures == 0 ? "✓ \(passes) storage checks passed" : "✗ \(failures) failed, \(passes) passed")
@@ -792,15 +792,16 @@ enum StorageStabilityTests {
         store.discardIfEmpty(pinned.id)
         check(store.notes[pinned.id]?.pinned == true, "a pinned blank note is kept")
 
+        // New notes take the user's default look, so a non-default style alone doesn't mean it was touched.
         var styled = NoteStyle()
         styled.textSize = 20
         let custom = store.createNote(in: notebookID, style: styled)
         store.discardIfEmpty(custom.id)
-        check(store.notes[custom.id]?.style == styled, "a blank note with a custom style is kept")
+        check(store.notes[custom.id] == nil, "a blank note in the user's default style is still discarded")
 
         check(await flushFailure(store) == nil, "the kept notes are saved")
         let reloaded = sb.makeStore()
-        check(reloaded.notes[pinned.id]?.pinned == true && reloaded.notes[custom.id]?.style == styled, "the kept notes survive a restart")
+        check(reloaded.notes[pinned.id]?.pinned == true, "the kept note survives a restart")
         check(reloaded.notes[blank.id] == nil, "the discarded note does not come back")
     }
 

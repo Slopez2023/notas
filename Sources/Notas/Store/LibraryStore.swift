@@ -201,7 +201,7 @@ final class LibraryStore {
     /// How long load waits for iCloud to bring down evicted files.
     @ObservationIgnored private let downloadTimeout: TimeInterval
 
-    init(rootURL: URL = LibraryStore.defaultRoot(), recoveryRoot: URL? = nil, downloadTimeout: TimeInterval = 10) {
+    init(rootURL: URL = LibraryStore.defaultRoot(), recoveryRoot: URL? = nil, downloadTimeout: TimeInterval = 3) {
         self.rootURL = rootURL
         self.recoveryRoot = recoveryRoot ?? Self.defaultRecoveryRoot(for: rootURL)
         self.downloadTimeout = downloadTimeout
@@ -666,7 +666,7 @@ final class LibraryStore {
 
     /// Drops a note that was created but never written in. Keeps the library free of blank notes.
     func discardIfEmpty(_ id: UUID) {
-        guard let note = notes[id], note.document.isEmpty, !note.pinned, note.style == NoteStyle(),
+        guard let note = notes[id], note.document.isEmpty, !note.pinned,
               note.tags.isEmpty, note.retainsEmptyDocument != true else { return }
         // Nothing was ever written for it, so there is nothing to recover.
         if let record = records[id], record.base == nil, writing[id] == nil { forget(id); return }

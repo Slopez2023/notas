@@ -333,7 +333,19 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         if loc > 0, loc <= nsString.length, paragraphRange(at: loc).location < loc {
             marks = InlineMarks(rawValue: textStorage?.attribute(.notasMarks, at: loc - 1, effectiveRange: nil) as? Int ?? 0)
         }
-        typingAttributes = styler.typingAttributes(for: block, marks: marks)
+        var typing = styler.typingAttributes(for: block, marks: marks)
+        setCarriedColors(at: loc, in: &typing)
+        typingAttributes = typing
+    }
+
+    private static let colorKeys: [NSAttributedString.Key] = [.notasInk, .notasHighlightColor]
+
+    /// Ink and highlight carry over from the character before `location`, as marks do.
+    private func setCarriedColors(at location: Int, in typing: inout [NSAttributedString.Key: Any]) {
+        let inParagraph = location > 0 && location <= nsString.length && paragraphRange(at: location).location < location
+        for key in Self.colorKeys {
+            typing[key] = inParagraph ? textStorage?.attribute(key, at: location - 1, effectiveRange: nil) : nil
+        }
     }
 
     // MARK: Blocks
@@ -575,14 +587,15 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         // Text typed at the very start of a paragraph belongs to *this* paragraph,
         // not the previous one (whose newline would otherwise lend its attributes).
         let para = paragraphRange(at: sel.location)
+        var typing = typingAttributes
+        setCarriedColors(at: sel.location, in: &typing)
         if sel.location == para.location {
-            var typing = typingAttributes
             for key in BlockAttributes.keys { typing[key] = nil }
             let block = blockAttributes(at: sel.location)
             typing.merge(block.dictionary) { $1 }
             typing[.paragraphStyle] = styler.paragraphStyle(for: block)
-            typingAttributes = typing
         }
+        typingAttributes = typing
 
         // Typing on a divider starts a new line below it.
         if blockAttributes(at: sel.location).kind.isObject, para.location > 0, !text.isEmpty {
@@ -794,7 +807,7 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         if isStructuredEdit || isRestyling {
             return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
         }
-        if (replacementString ?? "").isEmpty, rejectsSeparatorDeletion(affectedCharRange) {
+        if let replacementString, replacementString.isEmpty, rejectsSeparatorDeletion(affectedCharRange) {
             return false
         }
         return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
@@ -869,11 +882,14 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
     private func refreshTypingAttributesIfNeeded() {
         // Keep paragraph-level typing attributes in step with where the cursor is.
         let block = blockAttributes(at: currentLocation)
-        if BlockAttributes(typingAttributes) != block || typingAttributes[.notasDecor] == nil {
-            var marks = InlineMarks(rawValue: typingAttributes[.notasMarks] as? Int ?? 0)
+        var typing = typingAttributes
+        if BlockAttributes(typing) != block || typing[.notasDecor] == nil {
+            var marks = InlineMarks(rawValue: typing[.notasMarks] as? Int ?? 0)
             if paragraphRange(at: currentLocation).location == currentLocation { marks = [] }
-            typingAttributes = styler.typingAttributes(for: block, marks: marks)
+            typing = styler.typingAttributes(for: block, marks: marks)
         }
+        setCarriedColors(at: currentLocation, in: &typing)
+        typingAttributes = typing
     }
 
     // MARK: Mouse
@@ -1238,7 +1254,7 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
             inserted = isolated
         } else {
             replaceRange = range
-            inserted = replacement
+            inserted = inlineText(replacement, takingBlockAt: range.location)
         }
 
         isStructuredEdit = true
@@ -1251,6 +1267,19 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         setSelectedRange(NSRange(location: caret, length: 0))
         typingAttributes = styler.typingAttributes(for: BlockAttributes(kind: .body))
         return true
+    }
+
+    /// Plain text without a line break keeps the block kind, checked state and indent of the paragraph it lands in.
+    /// A copied list or heading keeps its own kind.
+    private func inlineText(_ text: NSAttributedString, takingBlockAt location: Int) -> NSAttributedString {
+        guard text.length > 0, !text.string.contains(where: \.isNewline),
+              BlockAttributes(text.attributes(at: 0, effectiveRange: nil)).kind == .body else { return text }
+        let block = blockAttributes(at: location)
+        let kept = NSMutableAttributedString(attributedString: text)
+        let all = NSRange(location: 0, length: kept.length)
+        for key in BlockAttributes.keys { kept.removeAttribute(key, range: all) }
+        kept.addAttributes((block.kind.isObject ? BlockAttributes(kind: .body) : block).dictionary, range: all)
+        return kept
     }
 
     private func affectedParagraphRange(for range: NSRange) -> NSRange {

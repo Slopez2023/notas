@@ -189,9 +189,7 @@ struct NoteEditorView: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-            let string = (link as? URL)?.absoluteString ?? (link as? String) ?? ""
-            guard let url = URL(string: string.contains("://") ? string : "https://\(string)") else { return false }
-            NSWorkspace.shared.open(url)
+            if let url = OpenableLink.url(from: link) { NSWorkspace.shared.open(url) }
             return true
         }
     }

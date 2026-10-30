@@ -14,6 +14,11 @@ enum EditorStabilityTests {
         var failures: [String] = []
         do { try await lifecycle(root: root, suite: suite) } catch { failures.append(error.localizedDescription) }
         do { try pasteAndDividers() } catch { failures.append(error.localizedDescription) }
+        do { try separatorBlockChange() } catch { failures.append(error.localizedDescription) }
+        do { try inlinePasteKeepsBlock() } catch { failures.append(error.localizedDescription) }
+        do { try carriedColors() } catch { failures.append(error.localizedDescription) }
+        do { try slashMatching() } catch { failures.append(error.localizedDescription) }
+        do { try openableLinks() } catch { failures.append(error.localizedDescription) }
         do { try indentation(root: root) } catch { failures.append(error.localizedDescription) }
         do { try emptyTrailingBlocks(root: root) } catch { failures.append(error.localizedDescription) }
         do { try inlinePrediction(root: root, suite: suite) } catch { failures.append(error.localizedDescription) }
@@ -130,6 +135,71 @@ enum EditorStabilityTests {
         try check(dividerView.document == valuable, "undo restores VALUABLE DATA")
         dividerView.undoManager?.redo()
         try check(dividerView.document == split, "redo restores the divider split")
+    }
+
+    private static func separatorBlockChange() throws {
+        let view = host()
+        view.undoManager?.groupsByEvent = false
+        view.load(NoteDocument(blocks: [text(.title, "T"), Block(kind: .divider, runs: []), Block(kind: .bullet, runs: []), text(.body, "After")]))
+        let divider = (view.string as NSString).range(of: RichTextCodec.dividerCharacter).location
+        grouped(view) {
+            view.setSelectedRange(NSRange(location: divider + 2, length: 0))
+            view.setBlockKind(.body)
+        }
+        try check(labels(view.document) == ["T", "divider", "", "After"], "an empty bullet under a divider keeps its place, got \(labels(view.document))")
+        try check(view.document.blocks[2].kind == .body, "turning the empty bullet under a divider into text is not rejected")
+    }
+
+    private static func inlinePasteKeepsBlock() throws {
+        let checklist = NoteDocument(blocks: [text(.title, "T"), Block(kind: .checklist, checked: false, runs: [InlineRun(text: "Buy milk")])])
+        let typed = paste("Hello ", at: 2, into: checklist)
+        try check(typed.blocks[1].kind == .checklist && typed.blocks[1].plainText == "Hello Buy milk", "pasted text keeps the checklist, got \(typed.blocks[1].kind) \(typed.blocks[1].plainText)")
+
+        let view = host()
+        view.load(checklist)
+        let board = fragmentBoard("Hello ")
+        let pasted = grouped(view) {
+            view.setSelectedRange(NSRange(location: 2, length: 0))
+            _ = view.readSelection(from: board, type: .notasBlocks)
+            return view.document
+        }
+        try check(pasted.blocks[1].kind == .checklist && pasted.blocks[1].plainText == "Hello Buy milk", "a pasted body fragment keeps the checklist, got \(pasted.blocks[1].kind) \(pasted.blocks[1].plainText)")
+    }
+
+    private static func carriedColors() throws {
+        let inked = host()
+        inked.load(NoteDocument(blocks: [text(.title, "T"), Block(kind: .body, runs: [InlineRun(text: "Red", ink: .red)])]))
+        let inkEnd = (inked.string as NSString).length
+        inked.setSelectedRange(NSRange(location: inkEnd, length: 0))
+        inked.insertText(" more", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let inkStorage = inked.textStorage
+        try check(inkStorage?.attribute(.notasInk, at: inkEnd, effectiveRange: nil) as? String == InkColor.red.rawValue
+            && inkStorage?.attribute(.notasInk, at: inkEnd + 4, effectiveRange: nil) as? String == InkColor.red.rawValue, "typing after red ink keeps the red")
+
+        let marked = host()
+        marked.load(NoteDocument(blocks: [text(.title, "T"), Block(kind: .body, runs: [InlineRun(text: "Mark", marks: [.highlight], highlightColor: .yellow)])]))
+        let markEnd = (marked.string as NSString).length
+        marked.setSelectedRange(NSRange(location: markEnd, length: 0))
+        marked.insertText(" more", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try check(marked.textStorage?.attribute(.notasHighlightColor, at: markEnd + 4, effectiveRange: nil) as? String == InkColor.yellow.rawValue, "typing after a yellow highlight keeps the highlight color")
+    }
+
+    private static func slashMatching() throws {
+        try check(SlashItem.matching("tareas").first?.id == "check", "the slash query tareas finds the checklist first")
+        try check(SlashItem.matching("titulo").first?.id == "h1", "the slash query titulo finds the heading first")
+        try check(SlashItem.matching("Título").first?.id == "h1", "the slash query Título ignores case and accents")
+        try check(SlashItem.matching("lista").contains { $0.id == "bullet" }, "the slash query lista finds the bulleted list")
+    }
+
+    private static func openableLinks() throws {
+        try check(OpenableLink.url(from: "https://example.com/a")?.absoluteString == "https://example.com/a", "an https link opens as written")
+        try check(OpenableLink.url(from: "example.com")?.absoluteString == "https://example.com", "a bare host becomes https")
+        try check(OpenableLink.url(from: URL(string: "mailto:hi@example.com"))?.scheme == "mailto", "a mailto link is allowed")
+        try check(OpenableLink.url(from: "http://example.com")?.scheme == "http", "an http link is allowed")
+        try check(OpenableLink.url(from: "file:///etc/hosts") == nil, "a file link is rejected")
+        try check(OpenableLink.url(from: "javascript://example.com/%0Aalert(1)") == nil, "a javascript link is rejected")
+        try check(OpenableLink.url(from: "notas://open") == nil, "a notas link is rejected")
+        try check(OpenableLink.url(from: "") == nil, "an empty link is rejected")
     }
 
     private static func indentation(root: URL) throws {
@@ -259,6 +329,16 @@ enum EditorStabilityTests {
             _ = editor.readSelection(from: board, type: .notasBlocks)
             return editor.document
         }
+    }
+
+    private static func fragmentBoard(_ value: String) -> NSPasteboard {
+        let source = host()
+        source.load(NoteDocument(blocks: [text(.title, "S"), text(.body, value)]))
+        source.setSelectedRange((source.string as NSString).range(of: value))
+        let board = NSPasteboard(name: .init("notas.editor.fragment"))
+        board.clearContents()
+        _ = source.writeSelection(to: board, type: .notasBlocks)
+        return board
     }
 
     private static func grouped<T>(_ view: NotasTextView, _ body: () -> T) -> T {

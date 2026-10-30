@@ -35,6 +35,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" Notas.app.zip \
+          gh release create "$GITHUB_REF_NAME" Notas.app.zip --latest \
             --title "Notas ${GITHUB_REF_NAME#v}" \
             --notes "Unsigned build for Apple Silicon Macs on macOS 26. Install with the one-line command in the README."

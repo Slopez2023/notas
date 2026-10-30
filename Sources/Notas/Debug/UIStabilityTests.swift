@@ -132,7 +132,32 @@ enum UIStabilityTests {
             header.close()
         }
 
+        var archived: [UUID] = []
+        let deletion = store.createNote(in: store.notebooks.first?.id)
+        app.open(deletion.id, newTab: true)
+        app.archiveDeletedNoteChat = { archived.append($0) }
+        app.widgetNoteID = deletion.id
+        app.isStylePanelOpen = true
+        let blockedRoot = root.appendingPathComponent("blocked-trash", isDirectory: true)
+        try? FileManager.default.createDirectory(at: blockedRoot, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: blockedRoot.appendingPathComponent("Trash").path, contents: nil)
+        let blockedStore = LibraryStore(rootURL: blockedRoot)
+        blockedStore.load()
+        let blockedApp = AppState(store: blockedStore, preferences: MemoryDefaults())
+        blockedApp.archiveDeletedNoteChat = { archived.append($0) }
+        let kept = blockedStore.createNote(in: nil)
+        blockedApp.open(kept.id, newTab: true)
+        blockedApp.widgetNoteID = kept.id
+        blockedApp.delete(kept.id)
+        check(blockedStore.notes[kept.id] != nil && blockedApp.tabs == [kept.id] && blockedApp.activeNoteID == kept.id,
+              "a failed trash keeps the note and its tab")
+        check(blockedApp.widgetNoteID == kept.id && archived.isEmpty, "a failed trash keeps the widget note and the chat")
+        app.delete(deletion.id)
+        check(store.notes[deletion.id] == nil && !app.tabs.contains(deletion.id), "a successful delete closes the tab")
+        check(app.widgetNoteID == nil && archived == [deletion.id], "a successful delete clears the widget note and archives the chat")
         for id in app.tabs { app.close(id) }
+        check(!app.isStylePanelOpen, "closing the last note closes the style panel")
+
         let main = Host(MainView().environment(app), width: 760, height: 500)
         await settle()
         check(app.windowWidth == 760, "first layout initializes windowWidth to 760")

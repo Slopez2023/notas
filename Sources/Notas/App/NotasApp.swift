@@ -247,20 +247,22 @@ struct NotasCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("Quick Note…") { app.showQuickCapture?() }
             Divider()
-            Button("New Note") { app.newNote() }.keyboardShortcut("n")
-            Button("New Note in Tab") { app.newNote() }.keyboardShortcut("t")
+            Button("New Note") { app.showMainWindow?(); app.newNote() }.keyboardShortcut("n")
+            Button("New Note in Tab") { app.showMainWindow?(); app.newNote() }.keyboardShortcut("t")
             Button("New Notebook…") { app.showMainWindow?(); app.notebookEditTarget = .new }.keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()
             Button("Close Tab") { _ = app.closeActiveTab() }
         }
 
         CommandMenu("Go") {
-            Button { app.selectWidgetNote?() } label: {
-                if app.activeNoteID != nil && app.activeNoteID == app.widgetNoteID { Label("Shown in Widget", systemImage: "checkmark") }
-                else { Text("Show This Note in Widget") }
-            }.disabled(app.activeNoteID == nil)
-            Divider()
-            Button("Search & Commands…") { app.isPaletteOpen = true }.keyboardShortcut("k")
+            if app.widgetsAvailable {
+                Button { app.selectWidgetNote?() } label: {
+                    if app.activeNoteID != nil && app.activeNoteID == app.widgetNoteID { Label("Shown in Widget", systemImage: "checkmark") }
+                    else { Text("Show This Note in Widget") }
+                }.disabled(app.activeNoteID == nil)
+                Divider()
+            }
+            Button("Search & Commands…") { app.showMainWindow?(); app.isPaletteOpen = true }.keyboardShortcut("k")
             Button("All Notes") { app.toggleDrawer(.all) }.keyboardShortcut("a", modifiers: [.command, .shift])
             Button("Pinned Notes") { app.toggleDrawer(.pinned) }.keyboardShortcut("p", modifiers: [.command, .shift])
             Divider()
@@ -315,13 +317,14 @@ struct NotasCommands: Commands {
         }
 
         CommandGroup(after: .toolbar) {
-            Button("Chat About This Note") { app.isChatOpen.toggle() }
+            Button("Chat About This Note") { app.showMainWindow?(); app.isChatOpen.toggle() }
                 .keyboardShortcut("j", modifiers: [.command, .option])
                 .disabled(app.activeNoteID == nil)
             Button("Customize Look") {
                 withAnimation(.snappy(duration: 0.25)) { app.isStylePanelOpen.toggle() }
             }
             .keyboardShortcut("l", modifiers: [.command, .option])
+            .disabled(app.activeNoteID == nil)
             Picker("Appearance", selection: Binding(get: { app.appearance }, set: { app.appearance = $0 })) {
                 ForEach(AppearanceSetting.allCases) { Text($0.label).tag($0) }
             }

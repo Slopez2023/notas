@@ -568,8 +568,10 @@ final class LibraryStore {
     }
 
     /// Blocking variant for callers that cannot await. Same rules; failures are reported through `issues`.
-    func trash(_ id: UUID) {
-        guard (try? beginTrash(id)) != nil else { return }
+    /// Returns true when the note is gone from the library.
+    @discardableResult
+    func trash(_ id: UUID) -> Bool {
+        guard (try? beginTrash(id)) != nil else { return false }
         do {
             if let job = makeJob(id), records[id]?.isDirty == true {
                 let ledger = self.ledger
@@ -578,8 +580,10 @@ final class LibraryStore {
             let package = try finishableTrashSource(id)
             _ = try io.sync { try StoreDisk.moveToTrash(package, id: id, trash: trashURL, ledger: ledger) }
             forget(id)
+            return true
         } catch {
             endTrash(id, failure: error)
+            return false
         }
     }
 

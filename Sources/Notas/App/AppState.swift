@@ -22,7 +22,9 @@ final class AppState {
     let store: LibraryStore
 
     private(set) var tabs: [UUID] = []
-    private(set) var activeNoteID: UUID?
+    private(set) var activeNoteID: UUID? {
+        didSet { if activeNoteID == nil, rightPanel == .style { rightPanel = .closed } }
+    }
     var drawer: DrawerContent?
     var isPaletteOpen = false
     var notebookEditTarget: NotebookEditTarget?
@@ -68,6 +70,8 @@ final class AppState {
     var widgetNoteID: UUID? {
         didSet { defaults.set(widgetNoteID?.uuidString, forKey: "widgetNoteID") }
     }
+    /// False in builds without the app group (no widget can show notes).
+    var widgetsAvailable = false
     private(set) var systemIsDark: Bool { didSet { refreshWidgets?() } }
 
     /// The editor currently on screen, for menu commands.
@@ -250,14 +254,33 @@ final class AppState {
         focusEditorSoon()
     }
 
+    /// Asks before moving the note to Trash. Only user-facing commands should call this.
+    func confirmDelete(_ id: UUID) {
+        guard let note = store.notes[id] else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete “\(note.displayTitle)”?"
+        alert.informativeText = "You can find it in the Notas Trash folder in iCloud Drive."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        if alert.runModal() == .alertFirstButtonReturn { delete(id) }
+    }
+
+    /// Moves the note to Trash. Tab, chat, and widget change only once the note is really gone.
     func delete(_ id: UUID) {
-        guard endEditingSession(id) else { return }
+        guard checkpointEditor(for: id), store.trash(id) else { return }
+        if let token = editorTokenByNote[id] {
+            editorRegistrations[token]?.coordinator.invalidate()
+        }
         if let archiveDeletedNoteChat {
             archiveDeletedNoteChat(id)
         } else {
             noteAssistant.deleteNote(id)
         }
-        store.trash(id)
+        if widgetNoteID == id {
+            widgetNoteID = nil
+            refreshWidgets?()
+        }
         if let i = tabs.firstIndex(of: id) {
             tabs.remove(at: i)
             if activeNoteID == id { activeNoteID = tabs.isEmpty ? nil : tabs[min(i, tabs.count - 1)] }
@@ -317,16 +340,6 @@ final class AppState {
     @discardableResult
     func checkpointForQuit() -> Bool {
         checkpointBoundEditors()
-    }
-
-    /// Checkpoints the bound editor and invalidates it so a late callback cannot write the note again.
-    @discardableResult
-    func endEditingSession(_ id: UUID) -> Bool {
-        guard checkpointEditor(for: id) else { return false }
-        if let token = editorTokenByNote[id] {
-            editorRegistrations[token]?.coordinator.invalidate()
-        }
-        return true
     }
 
     func toggleDrawer(_ content: DrawerContent) {

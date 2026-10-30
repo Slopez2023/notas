@@ -184,7 +184,7 @@ struct DrawerRow: View {
                 }
             }
             Divider()
-            Button("Delete", role: .destructive) { app.delete(note.id) }
+            Button("Delete", role: .destructive) { app.confirmDelete(note.id) }
         }
     }
 

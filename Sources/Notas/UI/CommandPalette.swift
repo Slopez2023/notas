@@ -198,14 +198,16 @@ struct CommandPalette: View {
         return query.lowercased().split(separator: " ").allSatisfy { t.contains($0) }
     }
 
+    private var quickShortcut: String? {
+        let shortcut = CaptureShortcut(rawValue: app.defaults.string(forKey: "captureShortcut") ?? "") ?? .optionSpace
+        return shortcut == .off ? nil : shortcut.label
+    }
+
     private func allCommands() -> [PaletteItem] {
         let store = app.store
         var items: [PaletteItem] = [
-            PaletteItem(id: "quick", icon: .symbol("square.and.pencil"), title: "Quick note", shortcut: "⌥Space") { app.showQuickCapture?() },
+            PaletteItem(id: "quick", icon: .symbol("square.and.pencil"), title: "Quick note", shortcut: quickShortcut) { app.showQuickCapture?() },
             PaletteItem(id: "new", icon: .symbol("square.and.pencil"), title: "New note", shortcut: "⌘N") { app.newNote() },
-            PaletteItem(id: "look", icon: .symbol("textformat"), title: "Customize look", shortcut: "⌥⌘L") {
-                withAnimation(.snappy(duration: 0.25)) { app.isStylePanelOpen = true }
-            },
             PaletteItem(id: "chat", icon: .symbol("bubble.left.and.text.bubble.right"), title: "Chat about this note", shortcut: "⌥⌘J") {
                 app.isChatOpen = true
             },
@@ -214,7 +216,12 @@ struct CommandPalette: View {
         ]
 
         if let note = app.activeNote {
-            items.append(PaletteItem(id: "widget", icon: .symbol("rectangle.inset.filled"), title: "Show this note in widget") { app.selectWidgetNote?() })
+            items.append(PaletteItem(id: "look", icon: .symbol("textformat"), title: "Customize look", shortcut: "⌥⌘L") {
+                withAnimation(.snappy(duration: 0.25)) { app.isStylePanelOpen = true }
+            })
+            if app.widgetsAvailable {
+                items.append(PaletteItem(id: "widget", icon: .symbol("rectangle.inset.filled"), title: "Show this note in widget") { app.selectWidgetNote?() })
+            }
             items.append(PaletteItem(id: "pin", icon: .symbol(note.pinned ? "pin.slash" : "pin"),
                                      title: note.pinned ? "Unpin note" : "Pin note") { store.togglePin(note.id) })
             for kind: BlockKind in [.checklist, .bullet, .numbered, .heading1, .heading2, .quote, .callout, .code, .body] {
@@ -252,7 +259,7 @@ struct CommandPalette: View {
                 app.focusEditorSoon()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { app.activeEditor?.insertDivider() }
             })
-            items.append(PaletteItem(id: "delete", icon: .symbol("trash"), title: "Delete note") { app.delete(note.id) })
+            items.append(PaletteItem(id: "delete", icon: .symbol("trash"), title: "Delete note") { app.confirmDelete(note.id) })
         }
 
         for nb in store.sortedNotebooks {

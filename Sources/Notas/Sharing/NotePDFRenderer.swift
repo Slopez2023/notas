@@ -25,8 +25,11 @@ final class NotePDFRenderer: NSObject, NSTextLayoutManagerDelegate {
         EditorStyler(style: style).restyle(storage, around: NSRange(location: 0, length: storage.length))
         // TextKit's standalone fragment renderer otherwise substitutes the system link blue.
         let shareLink = NSAttributedString.Key("notas.shareLink")
+        var links: [(Any, NSRange)] = []
         storage.enumerateAttribute(.link, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-            guard let value else { return }
+            if let value { links.append((value, range)) }
+        }
+        for (value, range) in links {
             storage.addAttributes([shareLink: value, .foregroundColor: style.nsAccent,
                                    .underlineStyle: NSUnderlineStyle.single.rawValue, .underlineColor: style.nsAccent], range: range)
             storage.removeAttribute(.link, range: range)
@@ -45,7 +48,10 @@ final class NotePDFRenderer: NSObject, NSTextLayoutManagerDelegate {
         if let name = file.notebookName {
             let metadata = ([name] + file.tags.map { "#" + $0 }).joined(separator: "   ")
             let text = NSAttributedString(string: metadata, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: style.nsTertiary])
-            items.append(Item(height: 34, breaks: []) { _ in text.draw(at: .zero) })
+            let lineWidth = width
+            items.append(Item(height: 34, breaks: []) { _ in
+                text.draw(with: NSRect(x: 0, y: 0, width: lineWidth, height: 16), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            })
         }
         var blocksByOffset: [Int: Block] = [:]
         var offset = 0

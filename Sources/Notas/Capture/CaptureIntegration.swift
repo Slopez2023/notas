@@ -56,6 +56,7 @@ final class CaptureIntegration {
         self.app = app
         self.shared = shared
         self.reloadWidgets = reloadWidgets
+        app.widgetsAvailable = shared != nil
     }
 
     deinit {

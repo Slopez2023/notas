@@ -26,6 +26,7 @@ struct TopBar: View {
                 BarButton(systemName: "textformat", help: "Customize this note's look (⌥⌘L)", isOn: app.isStylePanelOpen, style: style) {
                     withAnimation(.snappy(duration: 0.25)) { app.isStylePanelOpen.toggle() }
                 }
+                .disabled(app.activeNoteID == nil)
                 BarButton(systemName: "magnifyingglass", help: "Search and commands (⌘K)", isOn: app.isPaletteOpen, style: style) {
                     app.isPaletteOpen = true
                 }
@@ -58,12 +59,14 @@ struct BarButton: View {
     let style: ResolvedStyle
     let action: () -> Void
     @State private var hovering = false
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 13.5, weight: .medium))
                 .foregroundStyle(isOn ? style.text : style.tertiary.mix(with: style.text, by: hovering ? 0.5 : 0.25))
+                .opacity(isEnabled ? 1 : 0.35)
                 .frame(width: 30, height: 30)
                 .background(isOn ? style.accentColor.opacity(0.22) : (hovering ? style.surface.opacity(0.86) : .clear),
                             in: RoundedRectangle(cornerRadius: 9, style: .continuous))

@@ -27,9 +27,11 @@ public struct SharedCaptureStore: Sendable {
 
     public var inboxURL: URL { directory.appendingPathComponent("Captures", isDirectory: true) }
     public var snapshotURL: URL { directory.appendingPathComponent("widget-library.json") }
+    public var stagingURL: URL { directory.appendingPathComponent("Staging", isDirectory: true) }
+    public var failedURL: URL { inboxURL.appendingPathComponent("Failed", isDirectory: true) }
 
     public func createStagingDirectory(id: UUID) throws -> URL {
-        let url = directory.appendingPathComponent("Staging", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
+        let url = stagingURL.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
@@ -74,6 +76,22 @@ public struct SharedCaptureStore: Sendable {
         guard package.deletingLastPathComponent().standardizedFileURL == inboxURL.standardizedFileURL,
               package.pathExtension == "capture" else { throw CaptureError.invalidAttachment }
         try FileManager.default.removeItem(at: package)
+    }
+
+    /// Moves a package that can never be imported into `Failed/`, keeping its data, so it is not retried.
+    public func quarantine(package: URL) throws -> URL {
+        guard package.deletingLastPathComponent().standardizedFileURL == inboxURL.standardizedFileURL,
+              package.pathExtension == "capture" else { throw CaptureError.invalidAttachment }
+        try FileManager.default.createDirectory(at: failedURL, withIntermediateDirectories: true)
+        let stem = package.deletingPathExtension().lastPathComponent
+        var destination = failedURL.appendingPathComponent(package.lastPathComponent, isDirectory: true)
+        var n = 2
+        while FileManager.default.fileExists(atPath: destination.path) {
+            destination = failedURL.appendingPathComponent("\(stem)-\(n).capture", isDirectory: true)
+            n += 1
+        }
+        try FileManager.default.moveItem(at: package, to: destination)
+        return destination
     }
 
     public func publish(_ snapshot: SharedLibrarySnapshot) throws {

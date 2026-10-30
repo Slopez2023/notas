@@ -70,6 +70,7 @@ final class CaptureIntegration {
         observer = DistributedNotificationCenter.default().addObserver(forName: .notasCaptureReady, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.importPending() }
         }
+        sweepStaleStaging()
         if let shared {
             do {
                 try FileManager.default.createDirectory(at: shared.inboxURL, withIntermediateDirectories: true)
@@ -90,18 +91,56 @@ final class CaptureIntegration {
     func importPending(reportFailures: Bool = false) {
         guard let shared else { return }
         var failure: String?
+        var quarantined: String?
         do {
             for package in try shared.pendingPackages() {
                 do {
                     let request = try shared.request(in: package)
                     _ = try app.store.importCapture(request, package: package, style: app.defaultStyle)
-                    try shared.acknowledge(package: package)
-                } catch { failure = error.localizedDescription }
+                } catch {
+                    guard Self.isPermanent(error), (try? shared.quarantine(package: package)) != nil else { failure = error.localizedDescription; continue }
+                    quarantined = error.localizedDescription
+                    continue
+                }
+                do { try shared.acknowledge(package: package) } catch { failure = error.localizedDescription }
             }
         } catch { failure = error.localizedDescription }
-        lastError = failure
-        if reportFailures { app.captureImportError = failure }
+        lastError = failure ?? quarantined
+        if let quarantined { app.captureImportError = "A shared item couldn't be imported (\(quarantined)) and was moved to Failed in your capture inbox." }
+        else if reportFailures { app.captureImportError = failure }
         publishNow()
+    }
+
+    /// Errors that will recur on every retry. Anything else (for example the library being busy) is retried.
+    private static func isPermanent(_ error: Error) -> Bool {
+        switch error {
+        case is DecodingError, is CaptureError, is NoteAssets.AssetError:
+            return true
+        case let error as CocoaError:
+            return [.fileNoSuchFile, .fileReadNoSuchFile, .fileReadCorruptFile].contains(error.code)
+        case let error as LibraryError:
+            if case .destinationConflict = error { return true }
+            return false
+        default:
+            return false
+        }
+    }
+
+    /// Removes staging folders left by a crash. Recent ones may belong to an in-progress import or share.
+    func sweepStaleStaging(now: Date = Date()) {
+        let cutoff = now.addingTimeInterval(-86_400)
+        removeStale(in: app.store.rootURL.appendingPathComponent("Notes", isDirectory: true), prefix: ".capture-", before: cutoff)
+        if let shared { removeStale(in: shared.stagingURL, prefix: "", before: cutoff) }
+    }
+
+    private func removeStale(in folder: URL, prefix: String, before cutoff: Date) {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .contentModificationDateKey]
+        let entries = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys))) ?? []
+        for entry in entries where entry.lastPathComponent.hasPrefix(prefix) {
+            guard let values = try? entry.resourceValues(forKeys: keys), values.isDirectory == true,
+                  let modified = values.contentModificationDate, modified < cutoff else { continue }
+            try? FileManager.default.removeItem(at: entry)
+        }
     }
 
     func useCurrentNoteInWidget() {

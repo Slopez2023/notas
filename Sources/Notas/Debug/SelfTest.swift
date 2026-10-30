@@ -604,9 +604,11 @@ enum SelfTest {
             try shared.commit(next, staging: shared.createStagingDirectory(id: next.id))
             integration.importPending()
             check(store.notes[next.id]?.title == "Still imports", "one malformed capture does not block another")
-            check(FileManager.default.fileExists(atPath: invalid.path), "malformed capture remains recoverable")
-            integration.importPending(reportFailures: true)
+            check(!FileManager.default.fileExists(atPath: invalid.path) && FileManager.default.fileExists(atPath: shared.failedURL.appendingPathComponent(invalid.lastPathComponent).appendingPathComponent("capture.json").path), "malformed capture is moved to Failed and kept")
             check(app.captureImportError != nil, "failed shared imports report a recoverable problem to the app")
+            app.captureImportError = nil
+            integration.importPending(reportFailures: true)
+            check(app.captureImportError == nil, "a quarantined capture is not reported again")
 
             let image = NSImage(size: NSSize(width: 32, height: 20), flipped: false) { rect in NSColor.systemBlue.setFill(); rect.fill(); return true }
             let imageRequestID = UUID()

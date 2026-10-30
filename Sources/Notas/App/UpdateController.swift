@@ -84,11 +84,58 @@ private enum UpdateError: LocalizedError {
 final class UpdateController {
     private(set) var isBusy = false
     private(set) var activityTitle = "Check for Updates…"
+    /// A newer release found by the quiet background check, shown as an Update button.
+    private(set) var availableVersion: UpdateVersion?
+    private(set) var lastChecked: Date? = UserDefaults.standard.object(forKey: lastCheckedKey) as? Date
+
+    var checksAutomatically: Bool {
+        get { access(keyPath: \.checksAutomatically); return !UserDefaults.standard.bool(forKey: Self.manualOnlyKey) }
+        set {
+            withMutation(keyPath: \.checksAutomatically) { UserDefaults.standard.set(!newValue, forKey: Self.manualOnlyKey) }
+            if newValue { checkQuietly() }
+        }
+    }
 
     private static let releaseURL = URL(string: "https://api.github.com/repos/Slopez2023/notas/releases/latest")!
     private static let assetName = "Notas.app.zip"
     private static let bundleIdentifier = "com.stephenlopez.notas"
     private static let maximumDownloadSize: Int64 = 500 * 1_024 * 1_024
+    private static let lastCheckedKey = "updates.lastChecked"
+    private static let manualOnlyKey = "updates.manualOnly"
+    private static let quietInterval: TimeInterval = 6 * 60 * 60
+    private var quietTimer: Timer?
+
+    var versionDescription: String {
+        let version = currentVersion?.description ?? "unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return build.map { "Version \(version) (\($0))" } ?? "Version \(version)"
+    }
+
+    /// Checks at launch and every few hours without interrupting; a newer release only
+    /// lights up the Update button, it never installs on its own.
+    func startQuietChecks() {
+        checkQuietly()
+        quietTimer?.invalidate()
+        quietTimer = Timer.scheduledTimer(withTimeInterval: Self.quietInterval, repeats: true) { _ in
+            Task { @MainActor [weak self] in self?.checkQuietly() }
+        }
+    }
+
+    private func checkQuietly() {
+        guard checksAutomatically, !isBusy else { return }
+        Task {
+            guard let release = try? await latestRelease(),
+                  let current = currentVersion,
+                  let latest = UpdateVersion(release.tagName) else { return }
+            markChecked()
+            availableVersion = latest > current ? latest : nil
+        }
+    }
+
+    private func markChecked() {
+        lastChecked = .now
+        UserDefaults.standard.set(lastChecked, forKey: Self.lastCheckedKey)
+    }
 
     func checkForUpdates() {
         guard !isBusy else { return }
@@ -102,12 +149,15 @@ final class UpdateController {
             }
             do {
                 let release = try await latestRelease()
+                markChecked()
                 guard let current = currentVersion else { throw UpdateError.invalidCurrentVersion }
                 guard let latest = UpdateVersion(release.tagName) else { throw UpdateError.invalidRelease }
                 guard latest > current else {
+                    availableVersion = nil
                     showUpToDate(version: current)
                     return
                 }
+                availableVersion = latest
 
                 let response = showAvailable(current: current, latest: latest)
                 if response == .alertSecondButtonReturn {

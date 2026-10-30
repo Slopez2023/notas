@@ -696,7 +696,7 @@ final class LibraryStore {
     }
 
     func search(_ query: String, limit: Int = 30) -> [SearchHit] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = Self.searchFold(query.trimmingCharacters(in: .whitespaces))
         guard !q.isEmpty else {
             return notes.values.sorted { $0.modified > $1.modified }.prefix(limit)
                 .map { SearchHit(note: $0, score: 0, snippet: nil) }
@@ -710,7 +710,7 @@ final class LibraryStore {
             for term in terms {
                 if entry.title.hasPrefix(term) { score += 100 }
                 else if entry.title.contains(term) { score += 60 }
-                else if note.tags.contains(where: { $0.hasPrefix(term) }) { score += 40 }
+                else if note.tags.contains(where: { Self.searchFold($0).hasPrefix(term) }) { score += 40 }
                 else if entry.lowerBody.contains(term) { score += 10 }
                 else { matchedAll = false; break }
             }
@@ -726,13 +726,18 @@ final class LibraryStore {
 
     private func searchEntry(for note: Note) -> SearchEntry {
         if let cached = searchIndex[note.id] { return cached }
-        let entry = SearchEntry(title: note.title.lowercased(), lowerBody: note.document.bodyText.lowercased())
+        let entry = SearchEntry(title: Self.searchFold(note.title), lowerBody: Self.searchFold(note.document.bodyText))
         searchIndex[note.id] = entry
         return entry
     }
 
+    /// Lowercased and accent-free, so "cancion" finds "Canción".
+    private static func searchFold(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+
     private static func snippet(in text: String, around term: String) -> String? {
-        guard let r = text.range(of: term, options: .caseInsensitive) else { return nil }
+        guard let r = text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) else { return nil }
         let start = text.index(r.lowerBound, offsetBy: -30, limitedBy: text.startIndex) ?? text.startIndex
         let end = text.index(r.upperBound, offsetBy: 60, limitedBy: text.endIndex) ?? text.endIndex
         let piece = text[start..<end].replacingOccurrences(of: "\n", with: " ")

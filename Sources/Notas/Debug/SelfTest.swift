@@ -787,6 +787,10 @@ enum SelfTest {
         check(store.search("pasta").first?.note.id == note.id, "search by title")
         check(store.search("sage").first?.note.id == note.id, "search by body")
         check(store.search("zzz").isEmpty, "search misses")
+        let accented = store.createNote(in: nb.id)
+        store.updateDocument(accented.id, NoteDocument(blocks: [Block(kind: .title, runs: [InlineRun(text: "Canción de cumpleaños")])]))
+        check(store.search("cancion cumpleanos").first?.note.id == accented.id, "search ignores accents")
+        check(store.search("CANCIÓN").first?.note.id == accented.id, "search ignores case on accented letters")
         store.flush()
 
         let reloaded = LibraryStore(rootURL: dir)

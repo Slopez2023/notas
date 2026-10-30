@@ -127,6 +127,12 @@ struct NoteEditorView: NSViewRepresentable {
             saveTask = nil
             guard !invalidated else { return }
             guard let token = mountToken, app?.isCurrentEditorRegistration(noteID: noteID, token: token) == true else { return }
+            // Committing marked text mid-composition (an inline prediction, or an accent being
+            // typed) fights the input system and throws the caret back to the start of the word.
+            if textView?.hasMarkedText() == true {
+                scheduleSave()
+                return
+            }
             _ = checkpoint()
         }
 
@@ -136,7 +142,7 @@ struct NoteEditorView: NSViewRepresentable {
             guard !invalidated else { return true }
             guard let app else { return !dirty }
             textView?.flushRestyle()
-            finishMarkedText()
+            textView?.commitMarkedText()
             let document: NoteDocument?
             if let textView {
                 document = textView.document
@@ -160,14 +166,6 @@ struct NoteEditorView: NSViewRepresentable {
                 retainedSnapshot = snapshot
                 return false
             }
-        }
-
-        private func finishMarkedText() {
-            guard let textView, textView.hasMarkedText() else { return }
-            let marked = textView.markedRange()
-            guard marked.location != NSNotFound,
-                  let fragment = textView.attributedSubstring(forProposedRange: marked, actualRange: nil) else { return }
-            textView.insertText(fragment.string, replacementRange: marked)
         }
 
         func textDidChange(_ notification: Notification) {

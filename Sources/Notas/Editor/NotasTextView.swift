@@ -5,6 +5,11 @@ extension NSPasteboard.PasteboardType {
     static let notasBlocks = NSPasteboard.PasteboardType("com.stephenlopez.notas.blocks")
 }
 
+extension NSAttributedString.Key {
+    /// Marks the gray inline prediction AppKit shows after the word being typed.
+    static let textCompletion = NSAttributedString.Key("NSTextCompletion")
+}
+
 /// The note editor. A TextKit 2 `NSTextView` that understands blocks (lists, checklists,
 /// headings…) and inline marks, and keeps the text styled for the current theme.
 final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManagerDelegate {
@@ -808,9 +813,29 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         updateSlashMenu()
     }
 
+    /// How much of the marked text the user typed. macOS shows an inline prediction as marked
+    /// text: the typed letters plus gray NSTextCompletion characters that aren't kept as attributes.
+    private var typedMarkedLength: Int?
+
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        typedMarkedLength = nil
+        if let marked = string as? NSAttributedString {
+            marked.enumerateAttribute(.textCompletion, in: NSRange(location: 0, length: marked.length)) { value, range, stop in
+                if value != nil { typedMarkedLength = range.location; stop.pointee = true }
+            }
+        }
         super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
         needsDisplay = true
+    }
+
+    /// Commits marked text before a save that can't wait, without the inline prediction.
+    func commitMarkedText() {
+        guard hasMarkedText() else { return }
+        let marked = markedRange()
+        guard marked.location != NSNotFound, NSMaxRange(marked) <= nsString.length else { return }
+        let typed = NSRange(location: marked.location, length: min(typedMarkedLength ?? marked.length, marked.length))
+        insertText(nsString.substring(with: typed), replacementRange: marked)
+        inputContext?.discardMarkedText()
     }
 
     override func unmarkText() {

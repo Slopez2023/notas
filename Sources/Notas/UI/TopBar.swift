@@ -3,6 +3,7 @@ import SwiftUI
 /// Tabs in the middle, look + command buttons on the right. Doubles as the window's drag area.
 struct TopBar: View {
     @Environment(AppState.self) private var app
+    @Environment(UpdateController.self) private var updater: UpdateController?
 
     var body: some View {
         let style = app.chromeStyle
@@ -14,6 +15,9 @@ struct TopBar: View {
             TabStrip(style: style)
             Spacer(minLength: 6)
             HStack(spacing: 4) {
+                if let updater, let version = updater.availableVersion {
+                    UpdatePill(version: version, updater: updater, style: style)
+                }
                 BarButton(systemName: "bubble.left", help: "Chat about this note (⌥⌘J)", isOn: app.isChatOpen, style: style) {
                     withAnimation(.snappy(duration: 0.25)) { app.isChatOpen.toggle() }
                 }
@@ -25,8 +29,9 @@ struct TopBar: View {
                 BarButton(systemName: "magnifyingglass", help: "Search and commands (⌘K)", isOn: app.isPaletteOpen, style: style) {
                     app.isPaletteOpen = true
                 }
+                SettingsBarButton(updater: updater, style: style)
             }
-            .frame(maxWidth: 132, alignment: .trailing)
+            .frame(maxWidth: updater?.availableVersion == nil ? 166 : 250, alignment: .trailing)
         }
         .padding(.horizontal, 12)
         .padding(.top, 3)
@@ -67,6 +72,70 @@ struct BarButton: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(help)
+    }
+}
+
+/// Appears next to the bar buttons only when the quiet check found a newer release.
+struct UpdatePill: View {
+    let version: UpdateVersion
+    let updater: UpdateController
+    let style: ResolvedStyle
+    @State private var hovering = false
+
+    var body: some View {
+        Button { updater.checkForUpdates() } label: {
+            Label(updater.isBusy ? "Updating…" : "Update", systemImage: "arrow.down.circle.fill")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(style.text)
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .background(style.accentColor.opacity(hovering ? 0.34 : 0.22), in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(updater.isBusy)
+        .onHover { hovering = $0 }
+        .help("Notas \(version) is available. Click to install it.")
+        .fixedSize()
+    }
+}
+
+/// Settings, the current version, and Check for Updates in one place.
+struct SettingsBarButton: View {
+    let updater: UpdateController?
+    let style: ResolvedStyle
+    @State private var hovering = false
+
+    var body: some View {
+        Menu {
+            SettingsLink { Text("Settings…") }
+            Divider()
+            if let updater {
+                Text(updater.versionDescription)
+                if let version = updater.availableVersion {
+                    Button("Install Notas \(version)…") { updater.checkForUpdates() }
+                        .disabled(updater.isBusy)
+                } else {
+                    Button(updater.activityTitle) { updater.checkForUpdates() }
+                        .disabled(updater.isBusy)
+                }
+            }
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 13.5, weight: .medium))
+                .foregroundStyle(style.tertiary.mix(with: style.text, by: hovering ? 0.5 : 0.25))
+                .frame(width: 30, height: 30)
+                .background(hovering ? style.surface.opacity(0.86) : .clear,
+                            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .frame(width: 30, height: 30)
+        .onHover { hovering = $0 }
+        .help("Settings and updates")
+        .accessibilityLabel("Settings and updates")
     }
 }
 

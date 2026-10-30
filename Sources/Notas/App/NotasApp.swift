@@ -68,6 +68,7 @@ struct NotasApp: App {
         Window("Notas", id: "main") {
             MainView()
                 .environment(delegate.app)
+                .environment(delegate.updater)
                 .frame(minWidth: 760, minHeight: 500)
         }
         .windowStyle(.hiddenTitleBar)
@@ -75,6 +76,11 @@ struct NotasApp: App {
         .commands {
             NotasCommands(delegate: delegate)
             TextEditingCommands()
+        }
+        Settings {
+            SettingsView()
+                .environment(delegate.app)
+                .environment(delegate.updater)
         }
         MenuBarExtra("Notas", systemImage: "square.and.pencil") {
             NotasMenu(delegate: delegate)
@@ -108,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         integration?.start()
+        updater.startQuietChecks()
         // A plain `kill` (SIGTERM) quits normally so pending edits get written.
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)

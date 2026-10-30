@@ -16,6 +16,7 @@ enum EditorStabilityTests {
         do { try pasteAndDividers() } catch { failures.append(error.localizedDescription) }
         do { try indentation(root: root) } catch { failures.append(error.localizedDescription) }
         do { try emptyTrailingBlocks(root: root) } catch { failures.append(error.localizedDescription) }
+        do { try inlinePrediction(root: root, suite: suite) } catch { failures.append(error.localizedDescription) }
         if failures.isEmpty {
             print("✓ editor stability checks passed")
             return true
@@ -277,6 +278,38 @@ enum EditorStabilityTests {
         board.clearContents()
         _ = source.writeSelection(to: board, type: .notasBlocks)
         return board
+    }
+
+    /// macOS shows an inline prediction as marked text: what was typed plus gray NSTextCompletion text.
+    /// Autosave must leave it alone (committing it moved the caret to the start of the word),
+    /// and a forced save keeps only what was typed.
+    private static func inlinePrediction(root: URL, suite: String) throws {
+        let store = LibraryStore(rootURL: root.appendingPathComponent("prediction"))
+        store.load()
+        let app = AppState(store: store, preferences: UserDefaults(suiteName: suite))
+        app.archiveDeletedNoteChat = { _ in }
+        let note = store.createNote(in: nil)
+        store.updateDocument(note.id, NoteDocument(blocks: [text(.title, "T"), text(.body, "Happy ")]))
+        app.open(note.id)
+        let view = host()
+        let editor = NoteEditorView.Coordinator(noteID: note.id, app: app)
+        editor.mount(view)
+        let end = (view.string as NSString).length
+        view.setSelectedRange(NSRange(location: end, length: 0))
+        view.insertText("birthd", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let prediction = NSMutableAttributedString(string: "birthd")
+        prediction.append(NSAttributedString(string: "ay", attributes: [.textCompletion: 1, .foregroundColor: NSColor.gray]))
+        view.setMarkedText(prediction, selectedRange: NSRange(location: 6, length: 0), replacementRange: NSRange(location: end, length: 6))
+        view.flushRestyle()
+        let caret = view.selectedRange()
+
+        editor.saveNow()
+        try check(view.hasMarkedText(), "autosave leaves an inline prediction in place")
+        try check(view.selectedRange() == caret, "autosave keeps the caret after the typed letters")
+
+        try check(editor.checkpoint(), "a forced save succeeds with a prediction showing")
+        try check(store.notes[note.id]?.document.blocks.last?.plainText == "Happy birthd", "a forced save keeps only the typed letters")
+        editor.dismantle()
     }
 
     private static func host() -> NotasTextView {

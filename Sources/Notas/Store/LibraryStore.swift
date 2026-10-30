@@ -135,6 +135,8 @@ final class LibraryStore {
     let rootURL: URL
     let recoveryRoot: URL
     @ObservationIgnored var onLibraryChange: (() -> Void)?
+    /// A write merged in content from disk, so an open editor is showing older text.
+    @ObservationIgnored var onDocumentAdopted: ((UUID) -> Void)?
 
     /// Everything the store remembers about one note beyond its current value.
     private struct NoteRecord {
@@ -549,6 +551,11 @@ final class LibraryStore {
         if snapshot.document == snapshot.origin.basis {
             return snapshot.origin
         }
+        // A change from another Mac was merged in after this editor last loaded. The editor's text
+        // wins, but the merged version is kept as a recovery copy instead of being overwritten.
+        if let current = notes[id], current.document != snapshot.origin.basis, current.document != snapshot.document {
+            keepAside(current)
+        }
         updateDocument(id, snapshot.document)
         return DocumentOrigin(noteID: id, basis: snapshot.document)
     }
@@ -882,9 +889,23 @@ final class LibraryStore {
     }
 
     private func adopt(_ note: Note, for id: UUID) {
+        let documentChanged = notes[id]?.document != note.document
         notes[id] = note
         searchIndex[id] = nil
         onLibraryChange?()
+        if documentChanged { onDocumentAdopted?(id) }
+    }
+
+    /// Saves a version that is about to be replaced as a recovery copy and lists it as an issue.
+    private func keepAside(_ note: Note) {
+        guard let data = try? Self.encoder.encode(note), let source = records[note.id]?.package else { return }
+        let (folder, name) = (recoveryDirectory, "\(note.id.uuidString)-\(session.uuidString)-aside-\(UUID().uuidString)")
+        guard let saved = io.sync(execute: { StoreDisk.writeRecovery(data: data, package: source, folder: folder, name: name) }) else { return }
+        records[note.id]?.recoveries.append(saved)
+        loadIssues.append(LibraryIssue(id: derivedUUID("recovered:" + saved.path), kind: .recoveredEdit, noteID: note.id,
+                                       message: "A version of “\(note.displayTitle)” changed on another device was kept in \(saved.path).",
+                                       versions: [.init(id: derivedUUID("version:" + saved.path), title: note.displayTitle, package: saved, note: note)]))
+        refreshIssues()
     }
 
     /// A newer local edit met a commit that brought in disk content. Merge it against what was sent;

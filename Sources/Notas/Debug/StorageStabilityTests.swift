@@ -38,6 +38,7 @@ enum StorageStabilityTests {
         await run("S10 pinned blank notes are kept") { try await discardRules() }
         await run("S11 saved-aside notebook list is surfaced") { try await notebookRecoverySurfaced() }
         await run("S12 recovery copies never collide across runs") { try await recoveryNamesNeverCollide() }
+        await run("S13 a stale editor keeps the merged version aside") { try await staleEditorAfterMerge() }
         print(failures == 0 ? "✓ \(passes) storage checks passed" : "✗ \(failures) failed, \(passes) passed")
         return failures == 0
     }
@@ -389,6 +390,35 @@ enum StorageStabilityTests {
             let reloaded = sb.makeStore()
             check(reloaded.notebooks.map(\.id) == store.notebooks.map(\.id) && reloaded.notes.count == 1, "the seeded library reloads unchanged")
         }
+    }
+
+    // MARK: S13
+
+    /// Another device's text is merged in while an editor holds the older text. The editor is told,
+    /// and a save from the stale editor keeps the merged version as a recovery copy.
+    private static func staleEditorAfterMerge() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try sb.writeNotebooks([mintNotebook])
+        let base = note("Base text", "Base body")
+        try sb.writeNote(base)
+        let store = sb.makeStore()
+        var adopted: [UUID] = []
+        store.onDocumentAdopted = { adopted.append($0) }
+        let opened = try store.editableDocument(for: base.id)
+
+        var remote = base
+        remote.document = doc("Remote text", "Remote body")
+        try sb.writeNote(remote)
+        store.togglePin(base.id)
+        check(await flushFailure(store) == nil, "the pin merges with the remote text")
+        check(adopted == [base.id], "the open editor is told the document changed")
+
+        _ = try store.accept(EditorSnapshot(origin: opened.origin, document: doc("Local text", "Local body")))
+        check(store.notes[base.id]?.document == doc("Local text", "Local body"), "the editor's text is saved")
+        let aside = store.issues.first { $0.kind == .recoveredEdit && $0.noteID == base.id }
+        check(aside?.versions.first?.note?.document == doc("Remote text", "Remote body"), "the merged version is kept aside")
+        check(aside.flatMap { $0.versions.first?.package }.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent("note.json").path) } == true,
+              "the kept version is on disk")
     }
 
     // MARK: S3

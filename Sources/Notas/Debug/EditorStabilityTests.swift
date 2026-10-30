@@ -24,6 +24,7 @@ enum EditorStabilityTests {
         do { try await photos(root: root) } catch { failures.append(error.localizedDescription) }
         do { try tableFocus() } catch { failures.append(error.localizedDescription) }
         do { try inlinePrediction(root: root, suite: suite) } catch { failures.append(error.localizedDescription) }
+        do { try await reloadsMergedText(root: root, suite: suite) } catch { failures.append(error.localizedDescription) }
         if failures.isEmpty {
             print("✓ editor stability checks passed")
             return true
@@ -398,6 +399,32 @@ enum EditorStabilityTests {
         board.clearContents()
         _ = source.writeSelection(to: board, type: .notasBlocks)
         return board
+    }
+
+    /// A change from another device merged in by a save shows up in the open, idle editor.
+    private static func reloadsMergedText(root: URL, suite: String) async throws {
+        let library = root.appendingPathComponent("merged")
+        let store = LibraryStore(rootURL: library)
+        store.load()
+        let app = AppState(store: store, preferences: UserDefaults(suiteName: suite))
+        app.archiveDeletedNoteChat = { _ in }
+        let note = store.createNote(in: nil)
+        store.updateDocument(note.id, NoteDocument(blocks: [text(.title, "Mine"), text(.body, "Old body")]))
+        try await store.flush()
+        app.open(note.id)
+        let view = host()
+        let editor = NoteEditorView.Coordinator(noteID: note.id, app: app)
+        editor.mount(view)
+        view.setSelectedRange(NSRange(location: 2, length: 0))
+
+        var remote = try LibraryStore.decoder.decode(Note.self, from: Data(contentsOf: library.appendingPathComponent("Notes/\(note.id.uuidString).notas/note.json")))
+        remote.document = NoteDocument(blocks: [text(.title, "Mine"), text(.body, "Body from the other Mac")])
+        try LibraryStore.encoder.encode(remote).write(to: library.appendingPathComponent("Notes/\(note.id.uuidString).notas/note.json"), options: .atomic)
+        store.togglePin(note.id)
+        try await store.flush()
+        try check(view.document.blocks.last?.plainText == "Body from the other Mac", "an idle editor shows text merged from another device")
+        try check(view.selectedRange().location == 2, "reloading keeps the caret")
+        editor.dismantle()
     }
 
     /// macOS shows an inline prediction as marked text: what was typed plus gray NSTextCompletion text.

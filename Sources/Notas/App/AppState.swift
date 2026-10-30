@@ -117,6 +117,7 @@ final class AppState {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.systemIsDark = Self.readSystemIsDark() }
         }
+        store.onDocumentAdopted = { [weak self] id in self?.editorDocumentAdopted(id) }
     }
 
     private static func readSystemIsDark() -> Bool {
@@ -289,6 +290,12 @@ final class AppState {
     }
 
     // MARK: Editor handoff
+
+    /// Shows content merged in from another device in the open editor.
+    private func editorDocumentAdopted(_ id: UUID) {
+        guard let token = editorTokenByNote[id] else { return }
+        editorRegistrations[token]?.coordinator.reloadFromStore()
+    }
 
     @discardableResult
     func registerEditor(_ coordinator: NoteEditorView.Coordinator) -> UUID {

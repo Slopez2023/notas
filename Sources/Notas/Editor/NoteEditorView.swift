@@ -88,6 +88,18 @@ struct NoteEditorView: NSViewRepresentable {
             app.activeEditor = textView
         }
 
+        /// Loads the stored document after another device's change was merged in. Unsaved typing
+        /// is never replaced; its next save keeps the merged version aside instead.
+        func reloadFromStore() {
+            guard !invalidated, !dirty, let textView, !textView.hasMarkedText(), let app,
+                  let opened = try? app.store.editableDocument(for: noteID), opened.document != textView.document else { return }
+            let selection = textView.selectedRange()
+            origin = opened.origin
+            textView.load(opened.document)
+            let length = (textView.string as NSString).length
+            textView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
+        }
+
         func dismantle() {
             if let token = mountToken, app?.isCurrentEditorRegistration(noteID: noteID, token: token) == true {
                 _ = checkpoint()

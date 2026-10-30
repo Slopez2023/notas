@@ -225,9 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openQuickCapture() { quickCapture?.show() }
 
     func applicationDidResignActive(_ notification: Notification) {
-        if let editor = app.activeEditor, let id = app.activeNoteID {
-            store.updateDocument(id, editor.document)
-        }
+        app.checkpointForResignation()
         store.flush()
     }
 }

@@ -4,7 +4,7 @@ import AppKit
 import NotasShared
 #endif
 
-/// Regression checks for the storage findings S1–S8. Run with `Notas --storage-stability`.
+/// Regression checks for the storage findings S1–S12. Run with `Notas --storage-stability`.
 /// Every scenario runs against production `LibraryStore` and capture import code in a scratch
 /// directory; nothing here touches the real library, Application Support, or Keychain.
 @MainActor
@@ -31,6 +31,13 @@ enum StorageStabilityTests {
         await run("S6 duplicate identities") { try await duplicateIdentities() }
         await run("S7 capture retries") { try await captureRetries() }
         await run("S8 capture title and body") { try await captureTitleAndBody() }
+        await run("S9 placeholder-only library is not seeded") { try await placeholderOnlyLibrary() }
+        await run("S9 evicted note.json is waiting, not corrupt") { try await evictedNoteJSON() }
+        await run("S9 evicted download that arrives loads") { try await evictedDownloadArrives() }
+        await run("S9 evicted notebooks.json is not missing") { try await evictedNotebooks() }
+        await run("S10 pinned or styled blank notes are kept") { try await discardRules() }
+        await run("S11 saved-aside notebook list is surfaced") { try await notebookRecoverySurfaced() }
+        await run("S12 recovery copies never collide across runs") { try await recoveryNamesNeverCollide() }
         print(failures == 0 ? "✓ \(passes) storage checks passed" : "✗ \(failures) failed, \(passes) passed")
         return failures == 0
     }
@@ -64,8 +71,8 @@ enum StorageStabilityTests {
             try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         }
 
-        @MainActor func makeStore() -> LibraryStore {
-            let store = LibraryStore(rootURL: library, recoveryRoot: recovery)
+        @MainActor func makeStore(downloadTimeout: TimeInterval = 10) -> LibraryStore {
+            let store = LibraryStore(rootURL: library, recoveryRoot: recovery, downloadTimeout: downloadTimeout)
             store.load()
             stores.append(store)
             return store
@@ -698,6 +705,145 @@ enum StorageStabilityTests {
 
         check(CaptureRequest(text: "", links: [URL(string: "https://example.com/x")!]).title == "example.com", "link-only captures still use the host")
         check(CaptureRequest(text: " \n ", attachments: [CaptureAttachment(name: "a.png", typeIdentifier: "public.png")]).title == "Shared photos", "photo-only captures still say so")
+    }
+
+    // MARK: S9
+
+    /// A placeholder stands in for an item iCloud has not downloaded. Creates the hidden file.
+    private static func placeholder(_ url: URL) {
+        FileManager.default.createFile(atPath: url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).icloud").path, contents: nil)
+    }
+
+    private static func placeholderOnlyLibrary() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try FileManager.default.createDirectory(at: sb.notes, withIntermediateDirectories: true)
+        placeholder(sb.package(UUID()))
+        let started = Date()
+        let store = sb.makeStore(downloadTimeout: 0.2)
+        check(Date().timeIntervalSince(started) < 5, "the wait ends at the injected timeout")
+        check(store.notes.isEmpty && store.notebooks.isEmpty, "a placeholder-only library is not seeded")
+        check(store.issues.contains { $0.kind == .stillDownloading && $0.message.contains("iCloud") }, "the package is reported as still downloading from iCloud")
+        check(store.issues.contains { $0.message.contains("iCloud") }, "the notebook recovery message mentions iCloud")
+        let _: Bool = store.flush()
+        check(!FileManager.default.fileExists(atPath: sb.notebooksFile.path) && sb.packages(in: sb.notes).isEmpty, "nothing is written over the placeholders")
+    }
+
+    private static func evictedNoteJSON() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try sb.writeNotebooks([mintNotebook])
+        let id = UUID()
+        let package = sb.package(id)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        placeholder(package.appendingPathComponent("note.json"))
+        let store = sb.makeStore(downloadTimeout: 0.2)
+        check(store.notes[id] == nil, "the evicted note is not loaded yet")
+        check(!store.issues.contains { $0.kind == .unreadableNote }, "an evicted note.json is not reported as unreadable")
+        check(store.issues.contains { $0.kind == .stillDownloading && $0.message.contains("iCloud") }, "an evicted note.json is reported as still downloading from iCloud")
+        check(!store.notebooksNeedRecovery, "the notebook list is unaffected")
+        let _: Bool = store.flush()
+        check(!FileManager.default.fileExists(atPath: package.appendingPathComponent("note.json").path), "nothing is written over the evicted note")
+    }
+
+    private static func evictedDownloadArrives() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try sb.writeNotebooks([mintNotebook])
+        let arriving = note("Arrived from iCloud")
+        let package = sb.package(arriving.id)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        let marker = package.appendingPathComponent(".note.json.icloud")
+        FileManager.default.createFile(atPath: marker.path, contents: nil)
+        let json = package.appendingPathComponent("note.json")
+        let bytes = try LibraryStore.makeEncoder().encode(arriving)
+        // The download lands while load is waiting for it.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
+            try? bytes.write(to: json)
+            try? FileManager.default.removeItem(at: marker)
+        }
+        let store = sb.makeStore(downloadTimeout: 10)
+        check(store.notes[arriving.id]?.document == arriving.document, "a note that arrives during the wait loads")
+        check(!store.issues.contains { $0.kind == .stillDownloading || $0.kind == .unreadableNote }, "no download issue remains once it arrived")
+    }
+
+    private static func evictedNotebooks() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try sb.writeNote(note("Anchor"))
+        placeholder(sb.notebooksFile)
+        let store = sb.makeStore(downloadTimeout: 0.2)
+        check(store.notebooksNeedRecovery && store.notebooks.isEmpty, "an evicted notebooks.json is not treated as missing")
+        check(store.issues.contains { $0.kind == .notebooksUnreadable && $0.message.contains("iCloud") }, "the notebook list says it is still downloading from iCloud")
+        check(store.notes.count == 1, "the note still loads")
+        let _: Bool = store.flush()
+        check(!FileManager.default.fileExists(atPath: sb.notebooksFile.path), "no notebooks.json is written over the placeholder")
+    }
+
+    // MARK: S10
+
+    private static func discardRules() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try sb.writeNotebooks([mintNotebook])
+        let store = sb.makeStore()
+
+        let blank = store.createNote(in: notebookID)
+        store.discardIfEmpty(blank.id)
+        check(store.notes[blank.id] == nil, "an untouched blank note is discarded")
+
+        let pinned = store.createNote(in: notebookID)
+        store.togglePin(pinned.id)
+        store.discardIfEmpty(pinned.id)
+        check(store.notes[pinned.id]?.pinned == true, "a pinned blank note is kept")
+
+        var styled = NoteStyle()
+        styled.textSize = 20
+        let custom = store.createNote(in: notebookID, style: styled)
+        store.discardIfEmpty(custom.id)
+        check(store.notes[custom.id]?.style == styled, "a blank note with a custom style is kept")
+
+        check(await flushFailure(store) == nil, "the kept notes are saved")
+        let reloaded = sb.makeStore()
+        check(reloaded.notes[pinned.id]?.pinned == true && reloaded.notes[custom.id]?.style == styled, "the kept notes survive a restart")
+        check(reloaded.notes[blank.id] == nil, "the discarded note does not come back")
+    }
+
+    // MARK: S11, S12
+
+    private static func notebookRecoverySurfaced() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try sb.writeNotebooks([mintNotebook])
+        try sb.writeNote(note("Anchor"))
+        let store = sb.makeStore()
+        try FileManager.default.removeItem(at: sb.notebooksFile)
+        try FileManager.default.createDirectory(at: sb.notebooksFile, withIntermediateDirectories: true)
+        store.createNotebook(name: "Pantry", color: .sky)
+        check(await flushFailure(store) != nil, "the notebook write fails")
+
+        let restarted = sb.makeStore()
+        check(restarted.issues.filter { $0.kind == .notebookRecovery }.count == 1, "the saved-aside notebook list is an issue after restart")
+        let folder = sb.recovery.appendingPathComponent(try recoveryFolder(sb))
+        let saved = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        check(saved.contains { $0.hasPrefix("notebooks-") && $0.hasSuffix(".json") }, "the notebook copy is in the recovery folder")
+    }
+
+    private static func recoveryNamesNeverCollide() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try sb.writeNotebooks([mintNotebook])
+        let original = note("Original")
+        try sb.writeNote(original)
+
+        // First run: the package is blocked, so its edit is kept in recovery.
+        let first = sb.makeStore()
+        let firstAside = try sb.obstruct(sb.package(original.id))
+        first.updateDocument(original.id, doc("First run edit"))
+        check(await flushFailure(first) != nil, "the first run's save is blocked")
+        try sb.restore(sb.package(original.id), from: firstAside)
+
+        // Second run: the same generation fails again, and must not replace the first run's copy.
+        let second = sb.makeStore()
+        _ = try sb.obstruct(sb.package(original.id))
+        second.updateDocument(original.id, doc("Second run edit"))
+        check(await flushFailure(second) != nil, "the second run's save is blocked")
+        let folder = sb.recovery.appendingPathComponent(try recoveryFolder(sb))
+        let kept = sb.notesOnDisk(in: folder).map(\.document)
+        check(kept.count == 2 && kept.contains(doc("First run edit")) && kept.contains(doc("Second run edit")), "both runs keep their own recovery copy")
     }
 }
 #endif

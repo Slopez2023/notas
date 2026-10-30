@@ -30,6 +30,8 @@ enum StorageStabilityTests {
         await run("S6 renamed package") { try await renamedPackage() }
         await run("S6 duplicate identities") { try await duplicateIdentities() }
         await run("S7 capture retries") { try await captureRetries() }
+        await run("S7 unimportable capture is quarantined") { try await captureQuarantine() }
+        await run("S7 stale staging is swept") { try await staleStagingSweep() }
         await run("S8 capture title and body") { try await captureTitleAndBody() }
         print(failures == 0 ? "✓ \(passes) storage checks passed" : "✗ \(failures) failed, \(passes) passed")
         return failures == 0
@@ -662,6 +664,66 @@ enum StorageStabilityTests {
         check(store.notes[stuck] == nil && FileManager.default.fileExists(atPath: stuckInbox.path), "the blocked import leaves the inbox intact")
         chmod(locked.path, 0o755)
         check((try? store.importCapture(stuckRequest, package: stuckInbox)) != nil && assetNames(sb, stuck).count == 1, "once the leftovers can go, the import succeeds")
+    }
+
+    private static func captureQuarantine() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try sb.writeNotebooks([mintNotebook])
+        let store = sb.makeStore()
+        let shared = SharedCaptureStore(directory: sb.shared)
+        let suite = "com.stephenlopez.notas.tests.\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let app = AppState(store: store, preferences: preferences)
+        let integration = CaptureIntegration(app: app, shared: shared, reloadWidgets: {})
+
+        let id = UUID()
+        let staging = try shared.createStagingDirectory(id: id)
+        try pngData(.systemGreen).write(to: staging.appendingPathComponent("lost.png"))
+        let request = CaptureRequest(id: id, text: "Lost photo", attachments: [CaptureAttachment(name: "lost.png", typeIdentifier: "public.png")])
+        try shared.commit(request, staging: staging)
+        let inbox = shared.inboxURL.appendingPathComponent(id.uuidString + ".capture", isDirectory: true)
+        let quarantined = shared.failedURL.appendingPathComponent(inbox.lastPathComponent, isDirectory: true)
+        try FileManager.default.removeItem(at: inbox.appendingPathComponent("lost.png"))
+
+        integration.importPending(reportFailures: true)
+        check(app.captureImportError != nil, "the first pass reports the unimportable capture")
+        check(store.notes[id] == nil && !FileManager.default.fileExists(atPath: inbox.path), "the capture leaves the inbox without a note")
+        check(FileManager.default.fileExists(atPath: quarantined.appendingPathComponent("capture.json").path), "the capture is kept in Failed/")
+        check(try shared.pendingPackages().isEmpty, "Failed/ is not listed as pending")
+
+        app.captureImportError = nil
+        integration.importPending(reportFailures: true)
+        check(app.captureImportError == nil, "the next pass does not report it again")
+        check(FileManager.default.fileExists(atPath: quarantined.appendingPathComponent("capture.json").path), "the next pass leaves Failed/ alone")
+    }
+
+    private static func staleStagingSweep() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        try sb.writeNotebooks([mintNotebook])
+        let store = sb.makeStore()
+        let shared = SharedCaptureStore(directory: sb.shared)
+        let suite = "com.stephenlopez.notas.tests.\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let integration = CaptureIntegration(app: AppState(store: store, preferences: preferences), shared: shared, reloadWidgets: {})
+
+        let twoDaysAgo = Date().addingTimeInterval(-2 * 86_400)
+        let oldLibrary = sb.notes.appendingPathComponent(".capture-\(UUID().uuidString)", isDirectory: true)
+        let freshLibrary = sb.notes.appendingPathComponent(".capture-\(UUID().uuidString)", isDirectory: true)
+        let oldShared = try shared.createStagingDirectory(id: UUID())
+        let freshShared = try shared.createStagingDirectory(id: UUID())
+        let visible = sb.notes.appendingPathComponent("Visible", isDirectory: true)
+        for folder in [oldLibrary, freshLibrary, visible] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        for folder in [oldLibrary, oldShared, visible] {
+            try FileManager.default.setAttributes([.modificationDate: twoDaysAgo], ofItemAtPath: folder.path)
+        }
+
+        integration.sweepStaleStaging()
+        let fm = FileManager.default
+        check(!fm.fileExists(atPath: oldLibrary.path) && !fm.fileExists(atPath: oldShared.path), "stale staging folders are removed")
+        check(fm.fileExists(atPath: freshLibrary.path) && fm.fileExists(atPath: freshShared.path), "recent staging folders are kept")
+        check(fm.fileExists(atPath: visible.path), "folders without the staging prefix are never removed")
     }
 
     // MARK: S8

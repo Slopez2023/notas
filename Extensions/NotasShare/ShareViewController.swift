@@ -38,6 +38,7 @@ final class ShareModel {
     var notebooks: [NotebookOption] = []
     var notebookID: UUID?
     var error: String?
+    var notice: String?
     var loading = true
     private var shared: SharedCaptureStore?
     private var staging: URL?
@@ -63,31 +64,19 @@ final class ShareModel {
             notebooks = (try? store.snapshot().notebooks) ?? []
             notebookID = notebooks.first?.id
             var texts: [String] = []
+            var skipped = 0
             for item in items.compactMap({ $0 as? NSExtensionItem }) {
-                let providers = item.attachments ?? []
-                for provider in providers {
+                for provider in item.attachments ?? [] {
                     if cancelled { throw CocoaError(.userCancelled) }
-                    if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                        let value = try await loadItem(provider, type: UTType.fileURL.identifier)
-                        guard let url = CaptureItemDecoder.url(from: value), url.isFileURL else { throw CaptureError.invalidAttachment }
-                        attachments.append(try stageFile(url, in: directory))
-                    } else if let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true || UTType($0)?.conforms(to: .pdf) == true }) {
-                        attachments.append(try await loadFile(provider, type: type, into: directory))
-                    } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                        let value = try await loadItem(provider, type: UTType.url.identifier)
-                        let url = CaptureItemDecoder.url(from: value)
-                        guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw CaptureError.invalidAttachment }
-                        if !links.contains(url) { links.append(url) }
-                    } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                        let value = try await loadItem(provider, type: UTType.plainText.identifier)
-                        guard let string = (value as? String) ?? (value as? Data).flatMap({ String(data: $0, encoding: .utf8) }) else { throw CaptureError.invalidAttachment }
-                        if !texts.contains(string) { texts.append(string) }
-                    } else { throw CaptureError.invalidAttachment }
+                    do { try await add(provider, into: directory, texts: &texts) } catch { skipped += 1 }
                 }
                 if let content = item.attributedContentText?.string, !content.isEmpty, !texts.contains(content) { texts.append(content) }
             }
             text = texts.joined(separator: "\n\n")
-            if text.isEmpty, links.isEmpty, attachments.isEmpty { throw CaptureError.emptyCapture }
+            guard !text.isEmpty || !links.isEmpty || !attachments.isEmpty else {
+                throw skipped == 0 ? CaptureError.emptyCapture : CaptureError.invalidAttachment
+            }
+            if skipped > 0 { notice = "\(skipped) item\(skipped == 1 ? "" : "s") couldn't be added" }
         } catch {
             if !cancelled { self.error = error.localizedDescription }
             if let staging { try? FileManager.default.removeItem(at: staging) }
@@ -99,6 +88,25 @@ final class ShareModel {
         guard canSave, let shared, let staging else { throw CaptureError.emptyCapture }
         try shared.commit(CaptureRequest(id: id, text: text, links: links, notebookID: notebookID, attachments: attachments), staging: staging)
         self.staging = nil
+    }
+
+    private func add(_ provider: NSItemProvider, into directory: URL, texts: inout [String]) async throws {
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            let value = try await loadItem(provider, type: UTType.fileURL.identifier)
+            guard let url = CaptureItemDecoder.url(from: value), url.isFileURL else { throw CaptureError.invalidAttachment }
+            attachments.append(try stageFile(url, in: directory))
+        } else if let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true || UTType($0)?.conforms(to: .pdf) == true }) {
+            attachments.append(try await loadFile(provider, type: type, into: directory))
+        } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+            let value = try await loadItem(provider, type: UTType.url.identifier)
+            let url = CaptureItemDecoder.url(from: value)
+            guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw CaptureError.invalidAttachment }
+            if !links.contains(url) { links.append(url) }
+        } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+            let value = try await loadItem(provider, type: UTType.plainText.identifier)
+            guard let string = (value as? String) ?? (value as? Data).flatMap({ String(data: $0, encoding: .utf8) }) else { throw CaptureError.invalidAttachment }
+            if !texts.contains(string) { texts.append(string) }
+        } else { throw CaptureError.invalidAttachment }
     }
 
     private func loadItem(_ provider: NSItemProvider, type: String) async throws -> NSSecureCoding {
@@ -131,10 +139,12 @@ private func stageFile(_ url: URL, in directory: URL, typeIdentifier: String? = 
     let name = UUID().uuidString + "." + (type.preferredFilenameExtension ?? "png")
     let destination = directory.appendingPathComponent(name)
     try FileManager.default.copyItem(at: url, to: destination)
-    if type.conforms(to: .pdf) {
-        guard let document = PDFDocument(url: destination), document.pageCount > 0 else { throw CaptureError.invalidAttachment }
-    } else {
-        guard let image = NSImage(contentsOf: destination), image.isValid else { throw CaptureError.invalidAttachment }
+    let valid = type.conforms(to: .pdf)
+        ? (PDFDocument(url: destination)?.pageCount ?? 0) > 0
+        : NSImage(contentsOf: destination)?.isValid == true
+    guard valid else {
+        try? FileManager.default.removeItem(at: destination)
+        throw CaptureError.invalidAttachment
     }
     return CaptureAttachment(name: name, typeIdentifier: type.identifier)
 }
@@ -159,6 +169,7 @@ private struct ShareCaptureView: View {
                 TextEditor(text: $model.text).font(.system(size: 14)).frame(minHeight: 130).accessibilityLabel("Shared note text")
                 if !model.links.isEmpty { Text(model.links.map(\.absoluteString).joined(separator: "\n")).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                 if !model.attachments.isEmpty { Label("\(model.attachments.count) attached file\(model.attachments.count == 1 ? "" : "s")", systemImage: "photo.on.rectangle").font(.caption).foregroundStyle(.secondary) }
+                if let notice = model.notice { Text(notice).font(.caption).foregroundStyle(.secondary) }
             }
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack {

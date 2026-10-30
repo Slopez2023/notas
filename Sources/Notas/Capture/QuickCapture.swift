@@ -113,7 +113,10 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
             self.panel = panel
         }
         guard let panel else { return }
-        previousApp = NSWorkspace.shared.frontmostApplication
+        if !panel.isVisible {
+            let frontmost = NSWorkspace.shared.frontmostApplication
+            previousApp = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
+        }
         if model.notebookID == nil || model.app.store.notebook(model.notebookID!) == nil { model.notebookID = model.app.contextNotebookID }
         if let screen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }) ?? NSScreen.main {
             let visible = screen.visibleFrame
@@ -125,6 +128,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     func dismiss() {
         model.saveDraft()
         panel?.orderOut(nil)
+        reactivatePreviousApp()
     }
 
     func save(open: Bool) {
@@ -135,10 +139,15 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
                 model.app.open(note.id, newTab: true)
                 model.app.showMainWindow?()
                 NSApp.activate()
-            } else if let previousApp, previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-                previousApp.activate()
+            } else {
+                reactivatePreviousApp()
             }
         } catch { model.error = error.localizedDescription }
+    }
+
+    private func reactivatePreviousApp() {
+        guard let previousApp, previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        previousApp.activate()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool { dismiss(); return false }

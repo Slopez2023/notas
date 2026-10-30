@@ -71,6 +71,12 @@ struct BlockTextArea: NSViewRepresentable {
     let label: String
     let escape: () -> Void
 
+    /// The column that Tab (or Shift-Tab when `backwards`) moves to, or nil when focus leaves the block.
+    static func neighbor(of index: Int, count: Int, backwards: Bool) -> Int? {
+        let next = index + (backwards ? -1 : 1)
+        return (0..<count).contains(next) ? next : nil
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
@@ -113,6 +119,26 @@ struct BlockTextArea: NSViewRepresentable {
 private final class ColumnTextView: NSTextView {
     var onEscape: (() -> Void)?
     override func cancelOperation(_ sender: Any?) { onEscape?() }
+    override func insertTab(_ sender: Any?) { moveFocus(backwards: false) }
+    override func insertBacktab(_ sender: Any?) { moveFocus(backwards: true) }
+
+    /// Tab moves to the next column and Shift-Tab to the previous one. Past either end, focus returns to the note.
+    private func moveFocus(backwards: Bool) {
+        var walk: NSView? = self
+        while let view = walk, !(view.superview is NotasTextView) { walk = view.superview }
+        guard let block = walk, let editor = block.superview as? NotasTextView else { return }
+        let columns = Self.columns(in: block).sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
+        guard let index = columns.firstIndex(of: self) else { return }
+        if let next = BlockTextArea.neighbor(of: index, count: columns.count, backwards: backwards) {
+            window?.makeFirstResponder(columns[next])
+        } else {
+            editor.refocus()
+        }
+    }
+
+    private static func columns(in view: NSView) -> [ColumnTextView] {
+        view.subviews.flatMap { subview in (subview as? ColumnTextView).map { [$0] } ?? columns(in: subview) }
+    }
 }
 
 struct BoardDragHandle: NSViewRepresentable {

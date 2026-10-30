@@ -37,4 +37,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" Notas.app.zip --latest \
             --title "Notas ${GITHUB_REF_NAME#v}" \
-            --notes "Unsigned build for Apple Silicon Macs on macOS 26. Install with the one-line command in the README."
+            --notes-file "docs/releases/${GITHUB_REF_NAME#v}.md"

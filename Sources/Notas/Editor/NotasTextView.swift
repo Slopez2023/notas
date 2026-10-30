@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 extension NSPasteboard.PasteboardType {
     static let notasBlocks = NSPasteboard.PasteboardType("com.stephenlopez.notas.blocks")
@@ -20,6 +21,7 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
     var noteID: UUID?
     var richBlockHosts: [ObjectIdentifier: NSHostingView<RichBlockView>] = [:]
     var isPositioningRichBlocks = false
+    weak var observedClipView: NSClipView?
     var richTyping: (ObjectIdentifier, String, Date)?
 
     var maxContentWidth: CGFloat = 720 { didSet { updateInsets() } }
@@ -121,6 +123,29 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         positionRichBlocks()
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observeClipView()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        observeClipView()
+    }
+
+    /// Scrolling changes which rich blocks are visible, so the editor follows its clip view and relayouts on scroll.
+    private func observeClipView() {
+        let clip = window == nil ? nil : enclosingScrollView?.contentView
+        guard clip !== observedClipView else { return }
+        if let observedClipView { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedClipView) }
+        observedClipView = clip
+        guard let clip else { return }
+        clip.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(clipBoundsChanged), name: NSView.boundsDidChangeNotification, object: clip)
+    }
+
+    @objc private func clipBoundsChanged() { needsLayout = true }
+
     override func accessibilityChildren() -> [Any]? {
         (super.accessibilityChildren() ?? []) + richBlockHosts.values.sorted { $0.frame.minY < $1.frame.minY }
     }
@@ -189,6 +214,8 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
 
     func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions,
                      range editedRange: NSRange, changeInLength delta: Int) {
+        // Undo and redo change text without calling didChangeText, so mount attachments once the edit is applied.
+        if editedMask.contains(.editedCharacters) { connectRichBlocks() }
         guard pendingRestyle != nil, !restyleScheduled else { return }
         restyleScheduled = true
         DispatchQueue.main.async { [weak self] in self?.flushRestyle() }
@@ -1371,7 +1398,7 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
     // MARK: Pasteboard
 
     override var writablePasteboardTypes: [NSPasteboard.PasteboardType] { [.notasBlocks, .string] }
-    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.notasBlocks, .fileURL, .png, .tiff, .pdf, .string] }
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.notasBlocks, .string, .fileURL, .png, .tiff, .pdf] }
 
     override func writeSelection(to pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
         let fragment = attributedSubstring(forProposedRange: selectedRange(), actualRange: nil) ?? NSAttributedString()
@@ -1442,8 +1469,17 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
     }
 
     override func readSelection(from pboard: NSPasteboard) -> Bool {
-        if receiveImages(from: pboard) { return true }
+        if prefersImages(pboard), receiveImages(from: pboard) { return true }
         return super.readSelection(from: pboard)
+    }
+
+    /// Copied rich text often carries an image too. Text wins unless the pasteboard holds only images or image files.
+    func prefersImages(_ pboard: NSPasteboard) -> Bool {
+        guard pboard.availableType(from: [.string, .rtf]) != nil else { return true }
+        let urls = pboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return !urls.isEmpty && urls.allSatisfy { url in
+            UTType(filenameExtension: url.pathExtension).map { $0.conforms(to: .image) || $0.conforms(to: .pdf) } ?? false
+        }
     }
 
     override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?, returnType: NSPasteboard.PasteboardType?) -> Any? {
@@ -1459,7 +1495,7 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         let point = convert(sender.draggingLocation, from: nil)
         setSelectedRange(NSRange(location: characterIndexForInsertion(at: point), length: 0))
-        if receiveImages(from: sender.draggingPasteboard) { return true }
+        if prefersImages(sender.draggingPasteboard), receiveImages(from: sender.draggingPasteboard) { return true }
         return super.performDragOperation(sender)
     }
 }

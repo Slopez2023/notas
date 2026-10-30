@@ -403,8 +403,23 @@ enum SelfTest {
         check(board.columns[0].cards.map(\.text) == ["Second"] && board.columns[1].cards.map(\.text) == ["First"], "board drag moves card without losing it")
         board.move(card: "one", to: "a", before: "two")
         check(board.columns[0].cards.map(\.text) == ["First", "Second"], "board drag reorders before a card")
+        let source = BoardData(columns: [BoardColumn(id: "src", title: "Source", cards: [BoardCard(id: "kept", text: "Keep")])])
+        var elsewhere = BoardData(columns: [BoardColumn(id: "dst", title: "Target", cards: [])])
+        elsewhere.move(card: "kept", to: "dst")
+        check(elsewhere.columns[0].cards.isEmpty && source.columns[0].cards.map(\.text) == ["Keep"], "a card dropped on another board changes neither board")
         var table = TableData(rows: [["A", "B"], ["C"]]); table.normalize()
         check(table.rows == [["A", "B"], ["C", ""]], "ragged table normalizes empty cells")
+        let sketch = SketchData(width: 640, height: 260, strokes: [])
+        let narrow = sketch.fitTransform(in: CGSize(width: 320, height: 260))
+        check(narrow.a == 0.5 && narrow.d == 0.5 && narrow.tx == 0 && narrow.ty == 65, "sketch scales uniformly and centers vertically in a narrow canvas")
+        check(CGPoint(x: 640, y: 260).applying(narrow) == CGPoint(x: 320, y: 195), "sketch corner maps inside the centered area")
+        let tall = sketch.fitTransform(in: CGSize(width: 640, height: 400))
+        check(tall.a == 1 && tall.d == 1 && tall.tx == 0 && tall.ty == 70, "sketch centers horizontally on a tall canvas")
+        check(sketch.sketchPoint(for: CGPoint(x: 160, y: 130), in: CGSize(width: 320, height: 260)) == CGPoint(x: 320, y: 130), "pointer maps back into sketch coordinates")
+        check(sketch.sketchPoint(for: CGPoint(x: 160, y: 10), in: CGSize(width: 320, height: 260)) == CGPoint(x: 320, y: 0), "pointer in the letterbox clamps to the sketch")
+        check(BlockTextArea.neighbor(of: 0, count: 2, backwards: false) == 1 && BlockTextArea.neighbor(of: 1, count: 2, backwards: false) == nil
+              && BlockTextArea.neighbor(of: 0, count: 2, backwards: true) == nil && BlockTextArea.neighbor(of: 1, count: 2, backwards: true) == 0,
+              "Tab moves between columns and leaves the block at either end")
 
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("notas-rich-test-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }

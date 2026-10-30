@@ -28,6 +28,9 @@ enum EditorStabilityTests {
         do { try typedIntoTrailingLine(root: root) } catch { failures.append(error.localizedDescription) }
         do { try inlinePrediction(root: root, suite: suite) } catch { failures.append(error.localizedDescription) }
         do { try await reloadsMergedText(root: root, suite: suite) } catch { failures.append(error.localizedDescription) }
+        do { try richBlocks(root: root) } catch { failures.append(error.localizedDescription) }
+        do { try scrollBackIntoView() } catch { failures.append(error.localizedDescription) }
+        do { try pasteTextOverImage(root: root) } catch { failures.append(error.localizedDescription) }
         if failures.isEmpty {
             print("✓ editor stability checks passed")
             return true
@@ -512,6 +515,93 @@ enum EditorStabilityTests {
         try check(editor.checkpoint(), "a forced save succeeds with a prediction showing")
         try check(store.notes[note.id]?.document.blocks.last?.plainText == "Happy birthd", "a forced save keeps only the typed letters")
         editor.dismantle()
+    }
+
+    private static func richBlocks(root: URL) throws {
+        let (view, _) = scrolledHost()
+        view.load(NoteDocument(blocks: [text(.title, "T"), Block(kind: .body, runs: [])]))
+        view.undoManager?.removeAllActions()
+        view.setSelectedRange(NSRange(location: 2, length: 0))
+        view.insertRichBlock(.table)
+        while (view.undoManager?.groupingLevel ?? 0) > 0 { view.undoManager?.endUndoGrouping() }
+        let before = view.document
+        let storage = view.textStorage!
+        let attachment = storage.attribute(.attachment, at: 2, effectiveRange: nil) as? RichBlockAttachment
+        try check(attachment != nil && view.richBlockHosts.count == 1, "table block is mounted before deletion")
+        grouped(view) { view.removeRichBlock(attachment!) }
+        try check(view.richBlockHosts.isEmpty, "deleting the table unmounts it")
+        view.undoManager?.undo()
+        try check(view.document == before, "undo restores the deleted table")
+        try check(view.richBlockHosts.count == 1, "undo of a block deletion remounts the block without connectRichBlocks")
+    }
+
+    private static func scrollBackIntoView() throws {
+        let (view, scroll) = scrolledHost()
+        let filler = (0..<80).map { Block(kind: .body, runs: [InlineRun(text: "Line \($0)")]) }
+        view.load(NoteDocument(blocks: [text(.title, "T")] + filler + [Block(kind: .table, runs: [], payload: .empty(for: .table))]))
+        guard let manager = view.textLayoutManager, let content = view.textContentStorage,
+              let offset = view.textStorage?.string.utf16.count, offset > 0 else { throw EditorStabilityFailure("editor has TextKit 2 layout") }
+        manager.ensureLayout(for: manager.documentRange)
+        view.setFrameSize(NSSize(width: 800, height: manager.usageBoundsForTextContainer.maxY + 400))
+        let tableIndex = (view.textStorage?.string as NSString?).map { _ in
+            (0..<offset).first { view.textStorage?.attribute(.attachment, at: $0, effectiveRange: nil) is RichBlockAttachment } ?? -1
+        } ?? -1
+        guard tableIndex >= 0, let location = content.location(content.documentRange.location, offsetBy: tableIndex),
+              let fragment = manager.textLayoutFragment(for: location) else { throw EditorStabilityFailure("table has a layout fragment") }
+        let tableTop = fragment.layoutFragmentFrame.minY + view.textContainerOrigin.y
+        let clip = scroll.contentView
+        func scrollTo(_ y: CGFloat) throws {
+            clip.scroll(to: NSPoint(x: 0, y: y))
+            scroll.reflectScrolledClipView(clip)
+            view.layoutSubtreeIfNeeded()
+        }
+        try scrollTo(tableTop - 100)
+        let host = view.richBlockHosts.values.first
+        try check(host != nil && host?.isHidden == false, "scrolling a table into view shows it without a manual reposition")
+        try scrollTo(0)
+        try check(host?.isHidden == true, "scrolling the table out of view hides it")
+        try scrollTo(tableTop - 100)
+        try check(host?.isHidden == false && host.map { view.visibleRect.intersects($0.frame) } == true, "scrolling back shows the table in the visible rect")
+        try check(view.observedClipView === clip, "the editor observes the clip view of its scroll view")
+        view.removeFromSuperview()
+        try check(view.observedClipView == nil, "leaving the scroll view stops observing the clip view")
+    }
+
+    private static func scrolledHost() -> (NotasTextView, NSScrollView) {
+        let window = NSWindow(contentRect: NSRect(x: -12000, y: -12000, width: 800, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let view = NotasTextView.make()
+        scroll.documentView = view
+        window.contentView = scroll
+        view.setFrameSize(NSSize(width: 800, height: 600))
+        window.makeFirstResponder(view)
+        return (view, scroll)
+    }
+
+    private static func pasteTextOverImage(root: URL) throws {
+        let view = host()
+        view.load(NoteDocument(blocks: [text(.title, "T"), Block(kind: .body, runs: [])]))
+        view.noteAssets = NoteAssets(package: root.appendingPathComponent("paste-\(UUID().uuidString).notas", isDirectory: true))
+        guard let png = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)?
+            .representation(using: .png, properties: [:]) else { throw EditorStabilityFailure("a tiny PNG can be made") }
+        let both = NSPasteboard(name: .init("notas.editor.rich-paste-\(UUID().uuidString)"))
+        defer { both.releaseGlobally() }
+        both.clearContents()
+        both.setString("Pasted words", forType: .string)
+        both.setData(png, forType: .png)
+        view.setSelectedRange(NSRange(location: (view.string as NSString).length, length: 0))
+        _ = view.readSelection(from: both)
+        try check(view.string.contains("Pasted words"), "text on the pasteboard beside an image pastes as text")
+        try check(!view.document.blocks.contains { $0.kind == .gallery }, "text beside an image does not paste a gallery")
+
+        let imageOnly = NSPasteboard(name: .init("notas.editor.image-paste-\(UUID().uuidString)"))
+        defer { imageOnly.releaseGlobally() }
+        imageOnly.clearContents()
+        imageOnly.setData(png, forType: .png)
+        _ = view.readSelection(from: imageOnly)
+        try check(view.document.blocks.contains { $0.kind == .gallery }, "an image-only pasteboard still pastes a photo")
     }
 
     private static func host() -> NotasTextView {

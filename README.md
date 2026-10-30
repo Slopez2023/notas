@@ -46,7 +46,11 @@ curl -fsSL https://raw.githubusercontent.com/Slopez2023/notas/main/scripts/insta
 
 It downloads the latest release into `~/Applications` and opens Notas. The release build is not notarized, so the share extension and widgets are not included; build from source with an Apple signing identity for those.
 
-After installing, choose **Notas → Check for Updates…** or use **Check for Updates…** in the menu-bar item. Notas downloads and installs newer tagged releases, then reopens itself.
+Click the gear in the top-right corner to open **Settings…**, see your installed version, or choose **Check for Updates…**. You can also open Settings with **⌘,**.
+
+Notas checks GitHub for newer releases at launch and every six hours. When a newer release is available, an **Update** button appears beside the gear. Click it to download, install, and reopen Notas. Automatic checks can be turned off in Settings. **Notas → Check for Updates…** and the menu-bar item also check for updates.
+
+If your older copy has no update controls, quit Notas and run the install command above once to get them.
 
 ## Build from source
 

@@ -39,9 +39,8 @@ struct SketchCanvas: NSViewRepresentable {
         required init?(coder: NSCoder) { nil }
 
         private func point(_ event: NSEvent) -> NSPoint {
-            let p = convert(event.locationInWindow, from: nil)
-            return NSPoint(x: SketchStroke.rounded(min(max(p.x, 0), bounds.width) / max(1, bounds.width) * data.width),
-                           y: SketchStroke.rounded(min(max(p.y, 0), bounds.height) / max(1, bounds.height) * data.height))
+            let p = data.sketchPoint(for: convert(event.locationInWindow, from: nil), in: bounds.size)
+            return NSPoint(x: SketchStroke.rounded(p.x), y: SketchStroke.rounded(p.y))
         }
 
         override func mouseDown(with event: NSEvent) {
@@ -103,9 +102,22 @@ struct SketchCanvas: NSViewRepresentable {
 }
 
 extension SketchData {
+    /// Scales the sketch uniformly to fit `size` and centers it, so strokes keep their proportions.
+    func fitTransform(in size: CGSize) -> CGAffineTransform {
+        let scale = min(size.width / max(1, width), size.height / max(1, height))
+        return CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+                                 tx: (size.width - width * scale) / 2, ty: (size.height - height * scale) / 2)
+    }
+
+    /// A point on the canvas in sketch coordinates, kept inside the sketch.
+    func sketchPoint(for point: CGPoint, in size: CGSize) -> CGPoint {
+        let p = point.applying(fitTransform(in: size).inverted())
+        return CGPoint(x: min(max(p.x, 0), width), y: min(max(p.y, 0), height))
+    }
+
     func draw(in context: CGContext, size: CGSize, ink: NSColor) {
         context.saveGState()
-        context.scaleBy(x: size.width / max(1, width), y: size.height / max(1, height))
+        context.concatenate(fitTransform(in: size))
         for stroke in strokes where stroke.points.count >= 2 {
             let color = stroke.color.map { NSColor(hex: $0) } ?? ink
             context.setStrokeColor(color.withAlphaComponent(stroke.tool == .marker ? 0.32 : 1).cgColor)

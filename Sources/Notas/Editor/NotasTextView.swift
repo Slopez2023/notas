@@ -615,7 +615,20 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
             return before == 0x20 || before == 0x09
         }()
         super.insertText(string, replacementRange: replacementRange)
+        if !text.isEmpty { clearTerminalAfterText() }
         if opensSlash { openSlashMenu(at: sel.location) }
+    }
+
+    /// Text typed into the materialized empty last line: its synthetic newline now ends real
+    /// text, so it becomes an ordinary newline and the codec saves the empty line below it.
+    private func clearTerminalAfterText() {
+        let line = paragraphRange(at: selectedRange().location)
+        guard line.length > 1 else { return }
+        let newline = NSRange(location: NSMaxRange(line) - 1, length: 1)
+        guard (textStorage?.attribute(.notasTerminal, at: newline.location, effectiveRange: nil) as? Bool) == true else { return }
+        isStructuredEdit = true
+        defer { isStructuredEdit = false }
+        editAttributes(in: newline) { $0.removeAttribute(.notasTerminal, range: newline) }
     }
 
     /// "- ", "1. ", "[] ", "# ", "> " and friends at the start of a body paragraph.
@@ -1218,10 +1231,16 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
         let title = paragraphRange(at: 0)
         let keepTitle = insertingObjects && title.location == 0 && range.location <= NSMaxRange(title) && NSMaxRange(range) <= max(NSMaxRange(title), range.location)
             && (ns.length == 0 || paragraphRange(at: min(range.location, ns.length)).location == 0)
+        if keepTitle, range.length > 0 {
+            guard shouldChangeText(in: range, replacementString: "") else { return false }
+            storage.replaceCharacters(in: range, with: NSAttributedString())
+            didChangeText()
+            return replacePreservingObjects(in: NSRange(location: range.location, length: 0), with: replacement)
+        }
 
         let replaceRange: NSRange
         let inserted: NSAttributedString
-        if keepTitle && ns.length > 0 {
+        if keepTitle {
             let at = NSMaxRange(paragraphRange(at: 0))
             var piece = NSMutableAttributedString()
             if at == 0 || ns.character(at: at - 1) != 10 {
@@ -1387,9 +1406,39 @@ final class NotasTextView: NSTextView, NSTextStorageDelegate, NSTextLayoutManage
             if containsObjectPayload(text) || rangeIntersectsObject(selectedRange()) {
                 return replacePreservingObjects(in: selectedRange(), with: text)
             }
+            if plain.unicodeScalars.contains(where: { $0 == "\n" || $0 == "\r" }) {
+                return pasteLines(plain, over: selectedRange())
+            }
         }
         if [.fileURL, .png, .tiff, .pdf].contains(type) { return receiveImages(from: pboard) }
         return super.readSelection(from: pboard, type: type)
+    }
+
+    /// Multi-line plain text. The first line joins the caret's paragraph and keeps its kind;
+    /// the rest are body paragraphs, or more lines of the caret's list or code block.
+    private func pasteLines(_ plain: String, over range: NSRange) -> Bool {
+        guard let storage = textStorage else { return false }
+        let lines = plain.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").components(separatedBy: "\n")
+        let caret = blockAttributes(at: range.location)
+        let caretBlock = caret.kind.isObject ? BlockAttributes(kind: .body) : caret
+        let hasTail = NSMaxRange(range) < NSMaxRange(contentRange(of: paragraphRange(at: range.location)))
+        let follow = caretBlock.kind.isList || caretBlock.kind == .code
+            ? BlockAttributes(kind: caretBlock.kind, indent: caretBlock.indent) : BlockAttributes(kind: .body)
+        let text = NSMutableAttributedString()
+        var lastBlock = caretBlock
+        for (index, line) in lines.enumerated() {
+            let block = index == 0 || (hasTail && index == lines.count - 1) ? caretBlock : follow
+            let attrs = styler.typingAttributes(for: block)
+            text.append(NSAttributedString(string: line, attributes: attrs))
+            if index < lines.count - 1 { text.append(NSAttributedString(string: "\n", attributes: attrs)) }
+            lastBlock = block
+        }
+        guard shouldChangeText(in: range, replacementString: text.string) else { return false }
+        storage.replaceCharacters(in: range, with: text)
+        didChangeText()
+        setSelectedRange(NSRange(location: range.location + text.length, length: 0))
+        typingAttributes = styler.typingAttributes(for: lastBlock)
+        return true
     }
 
     override func readSelection(from pboard: NSPasteboard) -> Bool {

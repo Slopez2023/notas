@@ -16,6 +16,9 @@ enum EditorStabilityTests {
         do { try pasteAndDividers() } catch { failures.append(error.localizedDescription) }
         do { try indentation(root: root) } catch { failures.append(error.localizedDescription) }
         do { try emptyTrailingBlocks(root: root) } catch { failures.append(error.localizedDescription) }
+        do { try pastedLines() } catch { failures.append(error.localizedDescription) }
+        do { try titleSelectionPaste() } catch { failures.append(error.localizedDescription) }
+        do { try typedIntoTrailingLine(root: root) } catch { failures.append(error.localizedDescription) }
         do { try inlinePrediction(root: root, suite: suite) } catch { failures.append(error.localizedDescription) }
         if failures.isEmpty {
             print("✓ editor stability checks passed")
@@ -236,6 +239,54 @@ enum EditorStabilityTests {
         let newline = NoteDocument(blocks: [text(.title, "T"), text(.body, "Line"), text(.body, "")])
         let round = RichTextCodec.document(from: RichTextCodec.attributedString(from: newline))
         try check(round.blocks.map(\.kind) == [.title, .body, .body], "an ordinary trailing newline stays a body block")
+    }
+
+    private static func pastedLines() throws {
+        let heading = NoteDocument(blocks: [text(.title, "T"), text(.heading1, "Head")])
+        let headed = paste("one\ntwo\nthree", at: 6, into: heading)
+        try check(labels(headed) == ["T", "Headone", "two", "three"] && headed.blocks.map(\.kind) == [.title, .heading1, .body, .body], "multi-line paste keeps the heading on the first line only, got \(labels(headed)) \(headed.blocks.map(\.kind))")
+
+        let list = NoteDocument(blocks: [text(.title, "T"), Block(kind: .bullet, indent: 1, runs: [InlineRun(text: "Item")])])
+        let bullets = paste("a\nb", at: 6, into: list)
+        try check(labels(bullets) == ["T", "Itema", "b"] && bullets.blocks.map(\.kind) == [.title, .bullet, .bullet] && bullets.blocks.map { $0.indent ?? 0 } == [0, 1, 1], "multi-line paste continues the bullet at indent 1, got \(labels(bullets)) \(bullets.blocks.map { $0.indent ?? 0 })")
+
+        let checklist = NoteDocument(blocks: [text(.title, "T"), Block(kind: .checklist, checked: true, runs: [InlineRun(text: "Task")])])
+        let checks = paste("x\ny", at: 6, into: checklist)
+        try check(labels(checks) == ["T", "Taskx", "y"] && checks.blocks.map(\.kind) == [.title, .checklist, .checklist] && checks.blocks[2].checked != true, "multi-line paste adds an unchecked checklist item, got \(labels(checks)) \(checks.blocks.map(\.checked))")
+    }
+
+    private static func titleSelectionPaste() throws {
+        let view = host()
+        view.load(titled("Hello"))
+        view.setSelectedRange(NSRange(location: 1, length: 3))
+        grouped(view) { _ = view.readSelection(from: dividerBoard(), type: .notasBlocks) }
+        try check(labels(view.document) == ["Ho", "divider"] && view.document.blocks.map(\.kind) == [.title, .divider], "a divider pasted over the title selection leaves [Ho, divider], got \(labels(view.document))")
+        let whole = host()
+        whole.load(titled("Hello"))
+        whole.setSelectedRange(NSRange(location: 0, length: 5))
+        grouped(whole) { _ = whole.readSelection(from: dividerBoard(), type: .notasBlocks) }
+        try check(labels(whole.document) == ["", "divider"] && whole.document.blocks.map(\.kind) == [.title, .divider], "a divider pasted over the whole title keeps an empty title above it, got \(labels(whole.document))")
+    }
+
+    private static func typedIntoTrailingLine(root: URL) throws {
+        let view = host()
+        view.undoManager?.groupsByEvent = false
+        view.load(NoteDocument(blocks: [text(.title, "T"), Block(kind: .checklist, runs: [])]))
+        grouped(view) {
+            view.setSelectedRange(NSRange(location: (view.string as NSString).length - 1, length: 0))
+            view.insertText("abc", replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+        let typed = view.document
+        try check(labels(typed) == ["T", "abc", ""] && typed.blocks.map(\.kind) == [.title, .checklist, .body], "typing into the last empty checklist keeps the empty line below, got \(labels(typed)) \(typed.blocks.map(\.kind))")
+
+        let store = LibraryStore(rootURL: root.appendingPathComponent("trailing"))
+        store.load()
+        let note = store.createNote(in: nil)
+        store.updateDocument(note.id, typed)
+        let _: Bool = store.flush()
+        let reloaded = LibraryStore(rootURL: store.rootURL)
+        reloaded.load()
+        try check(reloaded.notes[note.id]?.document == typed, "reopen keeps the typed line and the empty line below it")
     }
 
     private static func paste(_ text: String, at location: Int, into document: NoteDocument, view: NotasTextView? = nil) -> NoteDocument {

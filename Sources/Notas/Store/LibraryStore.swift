@@ -1184,6 +1184,11 @@ final class LibraryStore {
 
 extension LibraryStore {
     func importSharedNote(_ file: SharedNoteFile) throws -> Note {
+        // Opening the same file again reopens the untouched copy instead of adding another.
+        if let existing = notes.values.first(where: {
+            $0.created == file.created && $0.modified == file.modified && $0.tags == file.tags
+                && $0.document.title == file.content.document.title && $0.document.bodyText == file.content.document.bodyText
+        }) { return existing }
         let fm = FileManager.default
         let id = UUID()
         let notesDirectory = rootURL.appendingPathComponent("Notes", isDirectory: true)

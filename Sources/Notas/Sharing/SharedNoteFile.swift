@@ -1,6 +1,6 @@
 import AppKit
 
-/// A portable copy has no library identity. Opening it always creates an independent note.
+/// A portable copy has no library identity. Opening it creates an independent note, once per file.
 struct SharedNoteFile: Codable {
     static let fileExtension = "notasnote"
     static let typeIdentifier = "com.stephenlopez.notas.note"

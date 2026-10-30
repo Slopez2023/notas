@@ -730,7 +730,7 @@ enum SelfTest {
             receiver.load()
             let first = try receiver.importSharedNote(decoded)
             let second = try receiver.importSharedNote(decoded)
-            check(first.id != second.id && first.id != note.id, "opening shared files creates independent copies")
+            check(first.id == second.id && first.id != note.id, "opening the same shared file twice reopens one independent copy")
             let importedName = first.document.blocks.first { $0.kind == .gallery }?.payload?.images?.first ?? ""
             let importedData = try Data(contentsOf: receiver.assets(for: first.id).url(for: importedName)!)
             check(importedName != name && importedData == decoded.content.assets[name], "imported photos have independent names and identical bytes")

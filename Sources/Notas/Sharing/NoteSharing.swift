@@ -6,16 +6,26 @@ final class NoteSharing {
     weak var anchor: NSView?
     private var sessions: [UUID: Session] = [:]
 
-    func present(_ file: SharedNoteFile, from view: NSView) throws {
-        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.stephenlopez.notas/SharedCopies", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let active = Set(sessions.keys.map(\.uuidString))
-        for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) {
-            if !active.contains(folder.lastPathComponent),
-               let date = try? folder.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+    nonisolated private static let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("com.stephenlopez.notas/SharedCopies", isDirectory: true)
+
+    /// Copies stay a week so a slow Mail or AirDrop can still read them; launch sweeps the rest.
+    init() {
+        DispatchQueue.global(qos: .utility).async { Self.pruneOldCopies(except: []) }
+    }
+
+    nonisolated private static func pruneOldCopies(except active: Set<String>) {
+        let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for folder in folders where !active.contains(folder.lastPathComponent) {
+            if let date = try? folder.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                date < Date().addingTimeInterval(-7 * 24 * 3600) { try? FileManager.default.removeItem(at: folder) }
         }
+    }
+
+    func present(_ file: SharedNoteFile, from view: NSView) throws {
+        let root = Self.root
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        Self.pruneOldCopies(except: Set(sessions.keys.map(\.uuidString)))
         let id = UUID()
         let folder = root.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -82,8 +92,15 @@ final class NoteSharing {
 }
 
 extension AppState {
-    func shareActiveNote(from anchor: NSView? = nil) {
-        guard var note = activeNote, let view = anchor ?? noteSharing.anchor ?? activeEditor, view.window != nil else { return }
+    func shareActiveNote(from anchor: NSView? = nil, retrying: Bool = false) {
+        guard var note = activeNote else { return }
+        guard let view = anchor ?? noteSharing.anchor ?? activeEditor, view.window != nil else {
+            // ⇧⌘S with the window closed: bring it back, then share from its button.
+            guard !retrying else { return }
+            showMainWindow?()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.shareActiveNote(retrying: true) }
+            return
+        }
         // Take the current document directly, including typing still inside the save debounce.
         if let editor = activeEditor, editor.noteID == note.id { note.document = editor.document }
         do {

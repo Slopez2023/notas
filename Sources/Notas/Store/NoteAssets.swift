@@ -114,7 +114,10 @@ struct BlockClipboard: Codable {
         self.document = document
         assets = [:]
         for name in Set(document.blocks.flatMap { $0.payload?.images ?? [] }) {
-            guard let url = source?.url(for: name), let data = try? Data(contentsOf: url) else { throw NoteAssets.AssetError.missing }
+            guard let url = source?.url(for: name), let data = try? Data(contentsOf: url) else {
+                if let url = source?.url(for: name) { try? FileManager.default.startDownloadingUbiquitousItem(at: url) }
+                throw NoteAssets.AssetError.missing
+            }
             assets[name] = data
         }
     }

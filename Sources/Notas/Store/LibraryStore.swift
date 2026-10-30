@@ -174,6 +174,8 @@ final class LibraryStore {
     }
     private struct NotebookState {
         var recovery: String?
+        /// The list as last read from or written to disk; the base for merging another device's changes.
+        var base: [Notebook]?
         var generation: UInt64 = 0
         var acknowledged: UInt64 = 0
         var failure: WriteFailure?
@@ -361,6 +363,7 @@ final class LibraryStore {
         switch metadata {
         case .notebooks(let list) where !list.isEmpty:
             notebooks = list.sorted { $0.order < $1.order }
+            notebookState.base = list
         case .notebooks, .missing:
             notebooks = []
             if downloading {
@@ -955,17 +958,27 @@ final class LibraryStore {
             refreshIssues()
             return nil
         }
-        return NotebookJob(generation: notebookState.generation, data: data, url: notebooksURL, root: rootURL,
+        return NotebookJob(generation: notebookState.generation, local: notebooks, base: notebookState.base, data: data, url: notebooksURL, root: rootURL,
                            recoveryFolder: recoveryDirectory, recoveryName: "notebooks-\(session.uuidString)-\(notebookState.generation)")
     }
 
     private func apply(_ receipt: NotebookReceipt, for job: NotebookJob) {
         let hadIssue = notebookState.failure != nil
         switch receipt {
-        case .written:
+        case .written(let written):
+            notebookState.base = written
+            // Another device's changes were merged into what was written; edits made since go on top.
+            if written != job.local {
+                let merged = StoreDisk.mergeNotebooks(base: job.local, local: notebooks, remote: written)
+                if merged != notebooks {
+                    notebooks = merged.sorted { $0.order < $1.order }
+                    onLibraryChange?()
+                }
+            }
             guard job.generation > notebookState.acknowledged else { return }
             notebookState.acknowledged = job.generation
             notebookState.failure = nil
+            if notebooks != written { markNotebooksDirty() }
         case .failed(let message, let recovered):
             notebookState.failure = WriteFailure(message: message, generation: job.generation, recovered: recovered)
         }
@@ -1242,6 +1255,8 @@ private enum WriteReceipt {
 
 private struct NotebookJob {
     let generation: UInt64
+    let local: [Notebook]
+    let base: [Notebook]?
     let data: Data
     let url: URL
     let root: URL
@@ -1250,7 +1265,8 @@ private struct NotebookJob {
 }
 
 private enum NotebookReceipt {
-    case written
+    /// What is now on disk: the local list, or the local list merged with another device's changes.
+    case written([Notebook])
     case failed(String, recovered: Bool)
 }
 
@@ -1403,6 +1419,24 @@ private enum StoreDisk {
 
     // MARK: Merging
 
+    /// Three-way merge per notebook. A notebook changed on one side takes that side; changed on both,
+    /// the local edit wins. A notebook deleted on one side but edited on the other is kept, so no
+    /// notebook a device still uses disappears.
+    static func mergeNotebooks(base: [Notebook], local: [Notebook], remote: [Notebook]) -> [Notebook] {
+        let b = Dictionary(base.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let l = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let r = Dictionary(remote.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var ids: [UUID] = []
+        for id in (local + remote).map(\.id) where !ids.contains(id) { ids.append(id) }
+        return ids.compactMap { id -> Notebook? in
+            let (old, mine, theirs) = (b[id], l[id], r[id])
+            if mine == theirs { return mine }
+            if mine == old { return theirs }
+            if theirs == old { return mine }
+            return mine ?? theirs
+        }.sorted { ($0.order, $0.name) < ($1.order, $1.name) }
+    }
+
     /// Three-way merge of one note. A field changed on only one side takes that side's value; a field
     /// both sides changed differently is a conflict. Timestamps never decide a winner.
     static func merge(base: Note?, local: Note, remote: Note) -> MergeResult {
@@ -1524,8 +1558,15 @@ private enum StoreDisk {
         let fm = FileManager.default
         do {
             try fm.createDirectory(at: job.root, withIntermediateDirectories: true)
-            try job.data.write(to: job.url, options: .atomic)
-            return .written
+            // Another device may have rewritten the list since it was read. Merge instead of replacing it.
+            var list = job.local
+            var data = job.data
+            if case .notebooks(let remote) = readNotebooks(at: job.url), !remote.isEmpty, remote != job.base {
+                list = mergeNotebooks(base: job.base ?? [], local: job.local, remote: remote)
+                data = try LibraryStore.makeEncoder().encode(list)
+            }
+            try data.write(to: job.url, options: .atomic)
+            return .written(list)
         } catch {
             var recovered = false
             do {

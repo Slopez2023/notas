@@ -39,6 +39,7 @@ enum StorageStabilityTests {
         await run("S11 saved-aside notebook list is surfaced") { try await notebookRecoverySurfaced() }
         await run("S12 recovery copies never collide across runs") { try await recoveryNamesNeverCollide() }
         await run("S13 a stale editor keeps the merged version aside") { try await staleEditorAfterMerge() }
+        await run("S14 notebook lists merge across devices") { try await notebookListsMerge() }
         print(failures == 0 ? "✓ \(passes) storage checks passed" : "✗ \(failures) failed, \(passes) passed")
         return failures == 0
     }
@@ -390,6 +391,32 @@ enum StorageStabilityTests {
             let reloaded = sb.makeStore()
             check(reloaded.notebooks.map(\.id) == store.notebooks.map(\.id) && reloaded.notes.count == 1, "the seeded library reloads unchanged")
         }
+    }
+
+    // MARK: S14
+
+    /// Another device adds and renames notebooks while this one renames a different one.
+    private static func notebookListsMerge() async throws {
+        let sb = Sandbox(); defer { sb.cleanup() }
+        let ideas = Notebook(id: UUID(), name: "Ideas", color: .sun, order: 1)
+        let trips = Notebook(id: UUID(), name: "Trips", color: .sky, order: 2)
+        try sb.writeNotebooks([mintNotebook, ideas, trips])
+        let store = sb.makeStore()
+
+        var renamed = ideas
+        renamed.name = "Ideas from the other Mac"
+        let work = Notebook(id: UUID(), name: "Work", color: .rose, order: 3)
+        try sb.writeNotebooks([mintNotebook, renamed, work])
+
+        store.renameNotebook(notebookID, to: "Cooking")
+        check(await flushFailure(store) == nil, "the notebook list saves")
+        let names = Set(sb.makeStore().notebooks.map(\.name))
+        check(names == ["Cooking", "Ideas from the other Mac", "Work"], "both devices' changes survive: \(names.sorted())")
+        check(Set(store.notebooks.map(\.name)) == names, "memory shows the merged list")
+
+        let merged = sb.makeStore()
+        merged.recolorNotebook(trips.id, to: .coral)
+        check(merged.notebook(trips.id) == nil, "a notebook deleted elsewhere stays deleted")
     }
 
     // MARK: S13

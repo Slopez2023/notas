@@ -264,6 +264,10 @@ final class AppState {
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
+        // Return cancels; deleting takes a click (or ⌘D), so fast typing can't confirm it.
+        alert.buttons[0].keyEquivalent = "d"
+        alert.buttons[0].keyEquivalentModifierMask = .command
+        alert.buttons[1].keyEquivalent = "\r"
         if alert.runModal() == .alertFirstButtonReturn { delete(id) }
     }
 

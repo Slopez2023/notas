@@ -11,6 +11,7 @@ struct BlockInput: NSViewRepresentable {
     var label: String
     var onTab: ((Bool) -> Void)?
     var onEscape: (() -> Void)?
+    var onFocus: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSTextField {
@@ -46,6 +47,7 @@ struct BlockInput: NSViewRepresentable {
         init(_ parent: BlockInput) { self.parent = parent }
         func controlTextDidBeginEditing(_ notification: Notification) {
             ((notification.object as? NSTextField)?.currentEditor() as? NSTextView)?.allowsUndo = false
+            parent.onFocus?()
         }
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }

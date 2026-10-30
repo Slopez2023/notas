@@ -23,13 +23,14 @@ struct NoteAssets {
     }
 
     func importImage(_ image: NSImage) throws -> String {
-        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
-           let data = Self.encode(cgImage, as: .png) {
-            return try write(data)
-        }
-        guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
-              let data = bitmap.representation(using: .png, properties: [:]) else { throw AssetError.unreadable }
-        return try write(data)
+        guard let cgImage = Self.cgImage(of: image), let tiff = Self.encode(cgImage, as: .tiff),
+              let source = CGImageSourceCreateWithData(tiff as CFData, nil) else { throw AssetError.unreadable }
+        return try store(source, longest: max(cgImage.width, cgImage.height))
+    }
+
+    private static func cgImage(of image: NSImage) -> CGImage? {
+        image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            ?? image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?.cgImage }
     }
 
     /// Longest side kept for imported photos. Plenty for a note, and a 12 MP original would
@@ -52,6 +53,11 @@ struct NoteAssets {
         if longest <= Self.maxStoredPixels, let type, let ext = Self.copyableExtensions[type], let data = try? Data(contentsOf: url) {
             return try write(data, extension: ext)
         }
+        return try store(source, longest: longest)
+    }
+
+    /// Shared by file and pasted images: downsample to `maxStoredPixels`, then JPEG unless the image has alpha.
+    private func store(_ source: CGImageSource, longest: Int) throws -> String {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -156,6 +162,24 @@ enum PhotoCache {
             cache.setObject(image, forKey: key(url, maxPixel), cost: cost)
         }
         return image
+    }
+
+    /// Retries a photo that isn't on disk yet. iCloud files download on demand, so a failed iCloud
+    /// read requests the download and tries again on a backoff.
+    static func loadWhenAvailable(_ url: URL, maxPixel: Int, backoff: [Double] = [1, 3, 10],
+                                  isUbiquitous: (URL) -> Bool = PhotoCache.isICloudItem) async -> NSImage? {
+        var waits = backoff[...]
+        while true {
+            if let image = await load(url, maxPixel: maxPixel) { return image }
+            guard !Task.isCancelled, isUbiquitous(url), let wait = waits.popFirst() else { return nil }
+            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled else { return nil }
+        }
+    }
+
+    static func isICloudItem(_ url: URL) -> Bool {
+        FileManager.default.isUbiquitousItem(at: url) || url.path.contains("/Mobile Documents/")
     }
 
     nonisolated private static func thumbnail(_ url: URL, maxPixel: Int) -> NSImage? {

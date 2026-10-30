@@ -134,7 +134,7 @@ struct RichBlockView: View {
             } else {
                 let height = min(220, (geometry.size.width - CGFloat(count - 1) * 8) / CGFloat(count) * 0.72)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: count), spacing: 8) {
-                    ForEach(Array(images.enumerated()), id: \.offset) { index, name in
+                    ForEach(Array(images.enumerated()), id: \.element) { index, name in
                         Button { preview = name } label: {
                             PhotoImage(url: attachment.assets?.url(for: name), maxPixel: 1400, fill: true) {
                                 Image(systemName: "icloud.and.arrow.down").frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -192,7 +192,7 @@ struct RichBlockView: View {
                                        placeholder: row == 0 && data.header ? "Heading" : "", style: style,
                                        bold: row == 0 && data.header, focus: tableFocus == key, label: "Row \(row + 1), column \(column + 1)",
                                        onTab: { backwards in tableTab(row: row, column: column, backwards: backwards) },
-                                       onEscape: { attachment.editor?.refocus() })
+                                       onEscape: { attachment.editor?.refocus() }, onFocus: { tableFocus = key })
                                 .padding(.horizontal, 10).frame(minWidth: 110, maxWidth: .infinity).frame(height: 37)
                                 .background(row == 0 && data.header ? style.accentColor.opacity(0.1) : style.background.opacity(0.35))
                         }
@@ -316,9 +316,13 @@ struct PhotoImage<Missing: View>: View {
             }
         }
         .task(id: url) {
+            image = url.flatMap { PhotoCache.cached($0, maxPixel: maxPixel) }
+            failed = false
             guard let url, image == nil else { return }
-            image = await PhotoCache.load(url, maxPixel: maxPixel)
-            failed = image == nil
+            let loaded = await PhotoCache.loadWhenAvailable(url, maxPixel: maxPixel)
+            guard !Task.isCancelled else { return }
+            image = loaded
+            failed = loaded == nil
         }
     }
 }

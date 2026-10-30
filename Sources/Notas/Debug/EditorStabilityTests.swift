@@ -16,6 +16,8 @@ enum EditorStabilityTests {
         do { try pasteAndDividers() } catch { failures.append(error.localizedDescription) }
         do { try indentation(root: root) } catch { failures.append(error.localizedDescription) }
         do { try emptyTrailingBlocks(root: root) } catch { failures.append(error.localizedDescription) }
+        do { try await photos(root: root) } catch { failures.append(error.localizedDescription) }
+        do { try tableFocus() } catch { failures.append(error.localizedDescription) }
         do { try inlinePrediction(root: root, suite: suite) } catch { failures.append(error.localizedDescription) }
         if failures.isEmpty {
             print("✓ editor stability checks passed")
@@ -236,6 +238,44 @@ enum EditorStabilityTests {
         let newline = NoteDocument(blocks: [text(.title, "T"), text(.body, "Line"), text(.body, "")])
         let round = RichTextCodec.document(from: RichTextCodec.attributedString(from: newline))
         try check(round.blocks.map(\.kind) == [.title, .body, .body], "an ordinary trailing newline stays a body block")
+    }
+
+    private static func photos(root: URL) async throws {
+        let assets = NoteAssets(package: root.appendingPathComponent("photos.notas"))
+        let opaque = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 5000, pixelsHigh: 3000, bitsPerSample: 8, samplesPerPixel: 3,
+                                      hasAlpha: false, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        let big = NSImage(size: NSSize(width: 5000, height: 3000))
+        if let opaque { big.addRepresentation(opaque) }
+        let bigName = try assets.importImage(big)
+        let bigSource = CGImageSourceCreateWithURL(assets.url(for: bigName)! as CFURL, nil)
+        let bigProps = bigSource.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) } as? [CFString: Any]
+        let bigLongest = max(bigProps?[kCGImagePropertyPixelWidth] as? Int ?? 0, bigProps?[kCGImagePropertyPixelHeight] as? Int ?? 0)
+        try check(bigName.hasSuffix(".jpg") && bigLongest == NoteAssets.maxStoredPixels, "pasted opaque image is downsampled to \(NoteAssets.maxStoredPixels) JPEG (got \(bigName) \(bigLongest))")
+
+        let alpha = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 48, bitsPerSample: 8, samplesPerPixel: 4,
+                                     hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        let small = NSImage(size: NSSize(width: 64, height: 48))
+        if let alpha { small.addRepresentation(alpha) }
+        let smallName = try assets.importImage(small)
+        try check(smallName.hasSuffix(".png"), "pasted image with transparency stays PNG (got \(smallName))")
+
+        let late = root.appendingPathComponent("late.png")
+        let png = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 40, pixelsHigh: 40, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)?
+            .representation(using: .png, properties: [:])
+        try check(png != nil, "test photo is created")
+        Task.detached { try? await Task.sleep(for: .milliseconds(100)); try? png?.write(to: late) }
+        let retried = await PhotoCache.loadWhenAvailable(late, maxPixel: 20, backoff: [0.5], isUbiquitous: { _ in true })
+        try check(max(retried?.size.width ?? 0, retried?.size.height ?? 0) == 20, "a photo that arrives during the iCloud backoff loads on retry")
+        let missing = await PhotoCache.loadWhenAvailable(root.appendingPathComponent("never.png"), maxPixel: 20, backoff: [0.01], isUbiquitous: { _ in false })
+        try check(missing == nil, "a missing local photo is not retried")
+    }
+
+    private static func tableFocus() throws {
+        var focused = 0
+        let input = BlockInput(text: .constant(""), style: ResolvedStyle(style: NoteStyle(), systemIsDark: true, appAccent: .violet), label: "cell", onFocus: { focused += 1 })
+        input.makeCoordinator().controlTextDidBeginEditing(Notification(name: NSControl.textDidBeginEditingNotification, object: NSTextField()))
+        try check(focused == 1, "a cell that starts editing reports focus so Tab can continue from it")
     }
 
     private static func paste(_ text: String, at location: Int, into document: NoteDocument, view: NotasTextView? = nil) -> NoteDocument {

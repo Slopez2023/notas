@@ -165,7 +165,6 @@ extension NotasTextView {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.prompt = "Add Photos"
-        let selection = selectedRange()
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self, weak attachment] response in
             guard response == .OK, let self else { return }
             guard let assets = self.noteAssets else { self.presentAssetError(NoteAssets.AssetError.missing); return }
@@ -180,7 +179,7 @@ extension NotasTextView {
                         payload.images = (payload.images ?? []) + names
                         attachment.update(payload)
                     } else {
-                        self.setSelectedRange(NSRange(location: min(selection.location, (self.string as NSString).length), length: 0))
+                        self.setSelectedRange(NSRange(location: min(self.selectedRange().location, (self.string as NSString).length), length: 0))
                         self.insertRichBlock(.gallery, payload: BlockPayload(images: names))
                     }
                 } catch { self?.presentAssetError(error) }

@@ -680,6 +680,11 @@ final class LibraryStore {
               note.tags.isEmpty, note.retainsEmptyDocument != true else { return }
         // Nothing was ever written for it, so there is nothing to recover.
         if let record = records[id], record.base == nil, writing[id] == nil { forget(id); return }
+        // Another device may have written into it since; then it isn't empty and stays.
+        if let record = records[id], writing[id] == nil, !record.isDirty, let known = record.revision {
+            let file = record.package.appendingPathComponent("note.json")
+            guard let data = io.sync(execute: { try? Data(contentsOf: file) }), FileRevision(data) == known else { return }
+        }
         trash(id)
     }
 

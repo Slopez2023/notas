@@ -860,6 +860,19 @@ enum StorageStabilityTests {
         let reloaded = sb.makeStore()
         check(reloaded.notes[pinned.id]?.pinned == true, "the kept note survives a restart")
         check(reloaded.notes[blank.id] == nil, "the discarded note does not come back")
+
+        // A saved blank note another device has since written into is not trashed on close.
+        let shared = reloaded.createNote(in: notebookID)
+        reloaded.togglePin(shared.id)
+        check(await flushFailure(reloaded) == nil, "the blank note is saved")
+        reloaded.togglePin(shared.id)
+        check(await flushFailure(reloaded) == nil, "the unpin is saved")
+        guard var filled = reloaded.notes[shared.id] else { check(false, "the blank note exists"); return }
+        filled.document = doc("Typed on the other Mac", "More")
+        try sb.writeNote(filled)
+        reloaded.discardIfEmpty(shared.id)
+        check(reloaded.notes[shared.id] != nil, "a note filled on another device is kept")
+        check(sb.makeStore().notes[shared.id]?.document == doc("Typed on the other Mac", "More"), "its text is still on disk")
     }
 
     // MARK: S11, S12

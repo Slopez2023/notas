@@ -73,10 +73,28 @@ private enum UpdateError: LocalizedError {
         case .invalidResponse: "GitHub returned an unexpected response."
         case .downloadTooLarge: "The update download is unexpectedly large."
         case .invalidArchive: "The downloaded update is not a valid Notas app."
-        case .cannotReplaceApp: "Notas cannot replace this app from its current folder."
+        case .cannotReplaceApp: "Notas can only update itself when it is named Notas.app and sits in a writable folder such as Applications. Move Notas into the Applications folder (or rename it to Notas.app, or reinstall with the install command), then try again."
         case .processFailed(let message): message
         }
     }
+}
+
+/// Runs a tool off the main actor. stderr is drained while the process runs, so a large message cannot block it.
+private func runTool(_ executable: String, arguments: [String]) async throws {
+    try await Task.detached {
+        let process = Process()
+        let errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardError = errors
+        try process.run()
+        let data = errors.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let detail = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw UpdateError.processFailed(detail.flatMap { $0.isEmpty ? nil : $0 } ?? "The update could not be prepared.")
+        }
+    }.value
 }
 
 @MainActor
@@ -87,6 +105,8 @@ final class UpdateController {
     /// A newer release found by the quiet background check, shown as an Update button.
     private(set) var availableVersion: UpdateVersion?
     private(set) var lastChecked: Date? = UserDefaults.standard.object(forKey: lastCheckedKey) as? Date
+    /// Helper arguments staged by a quit-for-update. Launched only once quitting is certain.
+    private var pendingInstall: (arguments: [String], work: URL)?
 
     var checksAutomatically: Bool {
         get { access(keyPath: \.checksAutomatically); return !UserDefaults.standard.bool(forKey: Self.manualOnlyKey) }
@@ -144,8 +164,10 @@ final class UpdateController {
 
         Task {
             defer {
-                isBusy = false
-                activityTitle = "Check for Updates…"
+                if pendingInstall == nil {
+                    isBusy = false
+                    activityTitle = "Check for Updates…"
+                }
             }
             do {
                 let release = try await latestRelease()
@@ -216,7 +238,7 @@ final class UpdateController {
         let extracted = work.appendingPathComponent("extracted", isDirectory: true)
         try fileManager.createDirectory(at: extracted, withIntermediateDirectories: true)
         try fileManager.moveItem(at: temporaryDownload, to: archive)
-        try run("/usr/bin/ditto", arguments: ["-x", "-k", archive.path, extracted.path])
+        try await runTool("/usr/bin/ditto", arguments: ["-x", "-k", archive.path, extracted.path])
 
         let candidate = extracted.appendingPathComponent("Notas.app", isDirectory: true)
         guard let bundle = Bundle(url: candidate),
@@ -225,11 +247,11 @@ final class UpdateController {
               UpdateVersion(candidateVersionString) == version else {
             throw UpdateError.invalidArchive
         }
-        try run("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", candidate.path])
+        try await runTool("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", candidate.path])
 
         let destination = Bundle.main.bundleURL.resolvingSymlinksInPath()
         let parent = destination.deletingLastPathComponent()
-        guard destination.pathExtension == "app",
+        guard Self.canReplace(destination),
               Bundle.main.bundleIdentifier == Self.bundleIdentifier,
               fileManager.isWritableFile(atPath: parent.path),
               let helper = Bundle.main.url(forResource: "install-update", withExtension: "sh") else {
@@ -239,29 +261,45 @@ final class UpdateController {
         let token = UUID().uuidString
         let staged = parent.appendingPathComponent(".Notas-update-\(token).app", isDirectory: true)
         let backup = parent.appendingPathComponent(".Notas-backup-\(token).app", isDirectory: true)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = [helper.path, String(ProcessInfo.processInfo.processIdentifier), candidate.path, destination.path, staged.path, backup.path, work.path]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
+        let arguments = [helper.path, String(ProcessInfo.processInfo.processIdentifier), candidate.path, destination.path, staged.path, backup.path, work.path]
         handedOffToInstaller = true
+        pendingInstall = (arguments, work)
+        activityTitle = "Installing Update…"
         NSApp.terminate(nil)
     }
 
-    private func run(_ executable: String, arguments: [String]) throws {
+    /// Starts the helper once quitting is certain (called from applicationWillTerminate).
+    func launchPendingInstall() {
+        guard let pending = pendingInstall else { return }
+        pendingInstall = nil
         let process = Process()
-        let errors = Pipe()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardError = errors
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let data = errors.fileHandleForReading.readDataToEndOfFile()
-            let detail = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw UpdateError.processFailed(detail.flatMap { $0.isEmpty ? nil : $0 } ?? "The update could not be prepared.")
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = pending.arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            try? FileManager.default.removeItem(at: pending.work)
         }
+    }
+
+    /// Called when quitting was cancelled (for example, a note could not be saved) after an update was staged.
+    func cancelPendingInstall() {
+        guard let pending = pendingInstall else { return }
+        pendingInstall = nil
+        try? FileManager.default.removeItem(at: pending.work)
+        isBusy = false
+        activityTitle = "Check for Updates…"
+        let alert = NSAlert()
+        alert.messageText = "The update was not installed"
+        alert.informativeText = "Notas stayed open, so the update was cancelled. It will be offered again the next time you check."
+        alert.runModal()
+    }
+
+    /// The helper only swaps a bundle named Notas.app.
+    static func canReplace(_ url: URL) -> Bool {
+        url.lastPathComponent == "Notas.app"
     }
 
     private func showAvailable(current: UpdateVersion, latest: UpdateVersion) -> NSApplication.ModalResponse {

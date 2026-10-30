@@ -43,6 +43,9 @@ enum SelfTest {
         check(newer.map { candidate in older.map { candidate > $0 } ?? false } ?? false, "release versions compare numerically")
         check(UpdateVersion("1.2") == UpdateVersion("1.2.0"), "missing release components compare as zero")
         check(UpdateVersion("main") == nil, "non-version release tags are rejected")
+        check(UpdateController.canReplace(URL(fileURLWithPath: "/Applications/Notas.app")), "updates replace a Notas.app bundle")
+        check(!UpdateController.canReplace(URL(fileURLWithPath: "/Applications/Notas 2.app")), "updates refuse other bundle names")
+        check(!UpdateController.canReplace(URL(fileURLWithPath: "/Applications/Notas.app.bak/Notas")), "updates refuse nested Notas paths")
     }
 
     // MARK: Codec

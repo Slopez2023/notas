@@ -146,6 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard app.checkpointForQuit() else {
             reportPersistenceFailure("A note is still open and its latest text could not be saved.")
+            updater.cancelPendingInstall()
             return .terminateCancel
         }
         let app = self.app
@@ -155,12 +156,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let history = app.noteAssistant.shutdown() {
                     self.reportPersistenceFailure(history)
                     NSApp.reply(toApplicationShouldTerminate: false)
+                    self.updater.cancelPendingInstall()
                 } else {
                     NSApp.reply(toApplicationShouldTerminate: true)
                 }
             } catch {
                 self.reportPersistenceFailure(error.localizedDescription)
                 NSApp.reply(toApplicationShouldTerminate: false)
+                self.updater.cancelPendingInstall()
             }
         }
         return .terminateLater
@@ -172,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quickCapture?.model.saveDraft()
         integration?.publishNow()
         let _: Bool = store.flush()
+        updater.launchPendingInstall()
     }
 
     private func reportPersistenceFailure(_ message: String) {

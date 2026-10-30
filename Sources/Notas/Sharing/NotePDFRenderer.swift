@@ -146,7 +146,7 @@ final class NotePDFRenderer: NSObject, NSTextLayoutManagerDelegate {
     private func addLinks(_ fragment: NSTextLayoutFragment, x: CGFloat, in context: CGContext) {
         for line in fragment.textLineFragments {
             line.attributedString.enumerateAttribute(NSAttributedString.Key("notas.shareLink"), in: line.characterRange) { value, range, _ in
-                guard let value, let url = (value as? URL) ?? (value as? String).flatMap(URL.init(string:)) else { return }
+                guard let value, let url = OpenableLink.url(from: value) else { return }
                 let a = line.locationForCharacter(at: range.location)
                 let b = line.locationForCharacter(at: NSMaxRange(range))
                 let rect = CGRect(x: x + line.typographicBounds.minX + min(a.x, b.x), y: line.typographicBounds.minY,

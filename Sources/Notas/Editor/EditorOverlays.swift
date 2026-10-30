@@ -36,31 +36,36 @@ struct SlashItem: Identifiable, Equatable {
     let action: Action
 
     static let all: [SlashItem] = [
-        SlashItem(id: "photos", title: "Photos", hint: "A gallery of favorite moments", symbol: "photo.on.rectangle", keywords: ["photo", "image", "gallery", "picture"], action: .block(.gallery)),
-        SlashItem(id: "scan", title: "Scan from iPhone", hint: "Capture a document or photo", symbol: "doc.viewfinder", keywords: ["scan", "camera", "iphone", "receipt"], action: .scan),
-        SlashItem(id: "table", title: "Table", hint: "Budgets, plans and comparisons", symbol: "tablecells", keywords: ["table", "grid", "budget"], action: .block(.table)),
-        SlashItem(id: "board", title: "Board", hint: "Arrange cards in columns", symbol: "rectangle.split.3x1", keywords: ["board", "kanban", "cards"], action: .block(.board)),
-        SlashItem(id: "columns", title: "Two columns", hint: "Write side by side", symbol: "rectangle.split.2x1", keywords: ["columns", "two", "side"], action: .block(.columns)),
-        SlashItem(id: "sketch", title: "Sketch", hint: "Draw with pen or highlighter", symbol: "scribble", keywords: ["sketch", "draw", "doodle"], action: .block(.sketch)),
-        SlashItem(id: "body", title: "Text", hint: "Plain writing", symbol: "text.alignleft", keywords: ["text", "body", "paragraph", "plain"], action: .block(.body)),
-        SlashItem(id: "h1", title: "Heading", hint: "Big section title", symbol: "textformat.size", keywords: ["heading", "h1", "title"], action: .block(.heading1)),
-        SlashItem(id: "h2", title: "Subheading", hint: "Medium title", symbol: "textformat.size.smaller", keywords: ["subheading", "h2"], action: .block(.heading2)),
-        SlashItem(id: "h3", title: "Small heading", hint: "Small title", symbol: "textformat.abc", keywords: ["small", "h3"], action: .block(.heading3)),
-        SlashItem(id: "check", title: "Checklist", hint: "Things to tick off", symbol: "checklist", keywords: ["checklist", "todo", "task", "check", "box"], action: .block(.checklist)),
-        SlashItem(id: "bullet", title: "Bulleted list", hint: "Simple list", symbol: "list.bullet", keywords: ["bullet", "list", "unordered"], action: .block(.bullet)),
-        SlashItem(id: "number", title: "Numbered list", hint: "Steps in order", symbol: "list.number", keywords: ["numbered", "ordered", "steps", "list"], action: .block(.numbered)),
-        SlashItem(id: "quote", title: "Quote", hint: "Something someone said", symbol: "text.quote", keywords: ["quote", "blockquote"], action: .block(.quote)),
-        SlashItem(id: "callout", title: "Callout", hint: "Make it stand out", symbol: "exclamationmark.bubble", keywords: ["callout", "note", "info", "tip", "box"], action: .block(.callout)),
-        SlashItem(id: "code", title: "Code", hint: "Monospaced block", symbol: "chevron.left.forwardslash.chevron.right", keywords: ["code", "mono"], action: .block(.code)),
-        SlashItem(id: "divider", title: "Divider", hint: "A quiet line", symbol: "minus", keywords: ["divider", "line", "separator", "hr", "rule"], action: .divider),
+        SlashItem(id: "photos", title: "Photos", hint: "A gallery of favorite moments", symbol: "photo.on.rectangle", keywords: ["photo", "image", "gallery", "picture", "fotos", "imagenes", "imágenes", "galeria", "galería"], action: .block(.gallery)),
+        SlashItem(id: "scan", title: "Scan from iPhone", hint: "Capture a document or photo", symbol: "doc.viewfinder", keywords: ["scan", "camera", "iphone", "receipt", "escanear", "escaner", "documento"], action: .scan),
+        SlashItem(id: "table", title: "Table", hint: "Budgets, plans and comparisons", symbol: "tablecells", keywords: ["table", "grid", "budget", "tabla", "presupuesto"], action: .block(.table)),
+        SlashItem(id: "board", title: "Board", hint: "Arrange cards in columns", symbol: "rectangle.split.3x1", keywords: ["board", "kanban", "cards", "tablero", "tarjetas"], action: .block(.board)),
+        SlashItem(id: "columns", title: "Two columns", hint: "Write side by side", symbol: "rectangle.split.2x1", keywords: ["columns", "two", "side", "columnas", "dos", "lado"], action: .block(.columns)),
+        SlashItem(id: "sketch", title: "Sketch", hint: "Draw with pen or highlighter", symbol: "scribble", keywords: ["sketch", "draw", "doodle", "dibujo", "dibujar", "boceto"], action: .block(.sketch)),
+        SlashItem(id: "body", title: "Text", hint: "Plain writing", symbol: "text.alignleft", keywords: ["text", "body", "paragraph", "plain", "texto", "parrafo", "párrafo"], action: .block(.body)),
+        SlashItem(id: "h1", title: "Heading", hint: "Big section title", symbol: "textformat.size", keywords: ["heading", "h1", "title", "encabezado", "titulo", "título"], action: .block(.heading1)),
+        SlashItem(id: "h2", title: "Subheading", hint: "Medium title", symbol: "textformat.size.smaller", keywords: ["subheading", "h2", "subtitulo", "subtítulo", "encabezado"], action: .block(.heading2)),
+        SlashItem(id: "h3", title: "Small heading", hint: "Small title", symbol: "textformat.abc", keywords: ["small", "h3", "pequeno", "pequeño", "encabezado"], action: .block(.heading3)),
+        SlashItem(id: "check", title: "Checklist", hint: "Things to tick off", symbol: "checklist", keywords: ["checklist", "todo", "task", "check", "box", "tareas", "tarea", "casillas", "pendientes"], action: .block(.checklist)),
+        SlashItem(id: "bullet", title: "Bulleted list", hint: "Simple list", symbol: "list.bullet", keywords: ["bullet", "list", "unordered", "lista", "viñetas", "vinetas", "viñeta"], action: .block(.bullet)),
+        SlashItem(id: "number", title: "Numbered list", hint: "Steps in order", symbol: "list.number", keywords: ["numbered", "ordered", "steps", "list", "numerada", "numerado", "numeros", "pasos"], action: .block(.numbered)),
+        SlashItem(id: "quote", title: "Quote", hint: "Something someone said", symbol: "text.quote", keywords: ["quote", "blockquote", "cita", "citar"], action: .block(.quote)),
+        SlashItem(id: "callout", title: "Callout", hint: "Make it stand out", symbol: "exclamationmark.bubble", keywords: ["callout", "note", "info", "tip", "box", "nota destacada", "aviso", "destacado", "importante"], action: .block(.callout)),
+        SlashItem(id: "code", title: "Code", hint: "Monospaced block", symbol: "chevron.left.forwardslash.chevron.right", keywords: ["code", "mono", "código", "codigo"], action: .block(.code)),
+        SlashItem(id: "divider", title: "Divider", hint: "A quiet line", symbol: "minus", keywords: ["divider", "line", "separator", "hr", "rule", "divisor", "línea", "linea", "separador"], action: .divider),
     ]
 
     static func matching(_ query: String) -> [SlashItem] {
-        let q = query.lowercased()
+        let q = fold(query)
         guard !q.isEmpty else { return all }
-        let prefix = all.filter { item in item.title.lowercased().hasPrefix(q) || item.keywords.contains { $0.hasPrefix(q) } }
-        let contains = all.filter { item in !prefix.contains(item) && item.title.lowercased().contains(q) }
+        let prefix = all.filter { item in fold(item.title).hasPrefix(q) || item.keywords.contains { fold($0).hasPrefix(q) } }
+        let contains = all.filter { item in !prefix.contains(item) && fold(item.title).contains(q) }
         return prefix + contains
+    }
+
+    /// Case and accents don't matter: "titulo" finds the Heading item.
+    private static func fold(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 }
 

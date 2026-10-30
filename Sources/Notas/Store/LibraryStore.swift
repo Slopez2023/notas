@@ -20,6 +20,10 @@ struct LibraryIssue: Identifiable, Equatable {
         case trashFailed
         /// A local copy of edits that never reached the library, left by an earlier run.
         case recoveredEdit
+        /// iCloud has not finished downloading this item. It is not loaded, and nothing is written over it.
+        case stillDownloading
+        /// Notebook changes that notebooks.json could not take were saved aside in the recovery folder.
+        case notebookRecovery
     }
 
     struct Version: Identifiable, Equatable {
@@ -192,10 +196,15 @@ final class LibraryStore {
     }
     @ObservationIgnored private let io = DispatchQueue(label: "notas.library.io", qos: .utility)
     @ObservationIgnored private let ledger = DiskLedger()
+    /// Names recovery copies per run, so a later run never replaces an earlier run's copy.
+    @ObservationIgnored private let session = UUID()
+    /// How long load waits for iCloud to bring down evicted files.
+    @ObservationIgnored private let downloadTimeout: TimeInterval
 
-    init(rootURL: URL = LibraryStore.defaultRoot(), recoveryRoot: URL? = nil) {
+    init(rootURL: URL = LibraryStore.defaultRoot(), recoveryRoot: URL? = nil, downloadTimeout: TimeInterval = 10) {
         self.rootURL = rootURL
         self.recoveryRoot = recoveryRoot ?? Self.defaultRecoveryRoot(for: rootURL)
+        self.downloadTimeout = downloadTimeout
     }
 
     nonisolated static func defaultRoot() -> URL {
@@ -236,8 +245,8 @@ final class LibraryStore {
         (folder ?? notesURL).appendingPathComponent("\(id.uuidString).notas", isDirectory: true)
     }
 
-    private func recoveryPackage(for id: UUID, generation: UInt64) -> URL {
-        recoveryDirectory.appendingPathComponent("\(id.uuidString)-\(generation).notas", isDirectory: true)
+    private func recoveryName(for id: UUID, generation: UInt64) -> String {
+        "\(id.uuidString)-\(session.uuidString)-\(generation)"
     }
 
     /// Assets live in the package the note was loaded from, wherever that is.
@@ -279,23 +288,29 @@ final class LibraryStore {
         debounce.values.forEach { $0.cancel() }
         debounce = [:]
         io.sync { ledger.removeAll() }
+        StoreDisk.awaitDownloads(notes: notesURL, notebooks: notebooksURL, timeout: downloadTimeout)
 
         // Decide whether this is a new library before creating any folder in it.
         var problems: [LibraryIssue] = []
         var populated = false
+        var downloading = false
         var packages: [URL] = []
+        var evictedPackages: [URL] = []
         switch StoreDisk.list(notesURL) {
         case .missing: break
         case .entries(let urls):
             packages = urls.filter { $0.pathExtension == "notas" }
-            populated = !packages.isEmpty
+            evictedPackages = urls.compactMap(StoreDisk.placeholderTarget).filter { $0.pathExtension == "notas" && !fm.fileExists(atPath: $0.path) }
+            // A placeholder means the library has content that has not arrived yet, so it is not a new library.
+            downloading = urls.contains { StoreDisk.placeholderTarget($0) != nil }
+            populated = !packages.isEmpty || downloading
         case .failed(let message):
             populated = true
             problems.append(LibraryIssue(id: derivedUUID("notes-folder"), kind: .unreadableNote, noteID: nil,
                                          message: "The Notes folder could not be read: \(message)"))
         }
         switch StoreDisk.list(trashURL) {
-        case .entries(let urls) where urls.contains(where: { $0.pathExtension == "notas" }): populated = true
+        case .entries(let urls) where urls.contains(where: { $0.pathExtension == "notas" || StoreDisk.placeholderTarget($0) != nil }): populated = true
         case .failed: populated = true
         default: break
         }
@@ -308,10 +323,15 @@ final class LibraryStore {
         trashFailures = [:]
         searchIndex.removeAll()
         var loaded: [UUID: [(package: URL, note: Note, revision: FileRevision)]] = [:]
+        for url in evictedPackages {
+            problems.append(Self.stillDownloading(url))
+        }
         for read in StoreDisk.readNotes(in: packages) {
             switch read.outcome {
             case .note(let note, let revision):
                 loaded[note.id, default: []].append((read.url, note, revision))
+            case .downloading:
+                problems.append(Self.stillDownloading(read.url))
             case .failure(let message):
                 problems.append(LibraryIssue(id: derivedUUID("unreadable:" + read.url.lastPathComponent), kind: .unreadableNote, noteID: nil,
                                              message: "\(read.url.lastPathComponent) could not be read: \(message)",
@@ -341,11 +361,16 @@ final class LibraryStore {
             notebooks = list.sorted { $0.order < $1.order }
         case .notebooks, .missing:
             notebooks = []
-            if populated {
+            if downloading {
+                notebookState.recovery = "The notebook list is missing while part of this library is still downloading from iCloud. It was not recreated."
+            } else if populated {
                 notebookState.recovery = "The notebook list is missing or empty, but this library already has notes. It was not recreated."
             } else {
                 seed = true
             }
+        case .evicted:
+            notebooks = []
+            notebookState.recovery = "notebooks.json is still downloading from iCloud."
         case .invalid(let message):
             notebooks = []
             notebookState.recovery = message
@@ -374,11 +399,22 @@ final class LibraryStore {
         }
     }
 
+    private static func stillDownloading(_ url: URL) -> LibraryIssue {
+        LibraryIssue(id: derivedUUID("downloading:" + url.lastPathComponent), kind: .stillDownloading, noteID: nil,
+                     message: "\(url.lastPathComponent) is still downloading from iCloud. It is not loaded, and it will not be changed until it arrives.")
+    }
+
     /// Recovery copies from earlier runs, so edits that never reached the library are not forgotten.
+    /// Notebook lists saved aside are reported too; they are never merged automatically.
     private func discoverRecoveries() -> [LibraryIssue] {
         guard case .entries(let urls) = StoreDisk.list(recoveryDirectory) else { return [] }
-        return urls.filter { $0.pathExtension == "notas" }.sorted { $0.lastPathComponent < $1.lastPathComponent }.compactMap { url in
-            guard let data = try? Data(contentsOf: url.appendingPathComponent("note.json")),
+        return urls.sorted { $0.lastPathComponent < $1.lastPathComponent }.compactMap { url -> LibraryIssue? in
+            if url.pathExtension == "json", url.lastPathComponent.hasPrefix("notebooks-") {
+                return LibraryIssue(id: derivedUUID("notebook-recovery:" + url.path), kind: .notebookRecovery, noteID: nil,
+                                    message: "Notebook changes were saved aside in \(url.path) because notebooks.json could not be written.")
+            }
+            guard url.pathExtension == "notas",
+                  let data = try? Data(contentsOf: url.appendingPathComponent("note.json")),
                   let note = try? Self.decoder.decode(Note.self, from: data) else { return nil }
             return LibraryIssue(id: derivedUUID("recovered:" + url.path), kind: .recoveredEdit, noteID: note.id,
                                 message: "Unsaved edits to “\(note.displayTitle)” were kept in \(url.path).",
@@ -630,7 +666,7 @@ final class LibraryStore {
 
     /// Drops a note that was created but never written in. Keeps the library free of blank notes.
     func discardIfEmpty(_ id: UUID) {
-        guard let note = notes[id], note.document.isEmpty,
+        guard let note = notes[id], note.document.isEmpty, !note.pinned, note.style == NoteStyle(),
               note.tags.isEmpty, note.retainsEmptyDocument != true else { return }
         // Nothing was ever written for it, so there is nothing to recover.
         if let record = records[id], record.base == nil, writing[id] == nil { forget(id); return }
@@ -800,7 +836,8 @@ final class LibraryStore {
             return nil
         }
         return WriteJob(id: id, generation: record.generation, package: record.package, data: data, local: note, base: record.base,
-                        expected: record.revision, recoveryDirectory: recoveryPackage(for: id, generation: record.generation))
+                        expected: record.revision, recoveryFolder: recoveryDirectory,
+                        recoveryName: recoveryName(for: id, generation: record.generation))
     }
 
     /// Records what a write achieved. Only the generation that was actually written is acknowledged,
@@ -858,16 +895,17 @@ final class LibraryStore {
             if merged != current { adopt(merged, for: id) }
         case .conflict:
             guard let revision = records[id]?.revision else { return }
-            let recovery = recoveryPackage(for: id, generation: records[id]?.generation ?? 0)
+            let folder = recoveryDirectory
+            let name = recoveryName(for: id, generation: records[id]?.generation ?? 0)
             let source = records[id]?.package
             var localData: Data?
             localData = try? Self.encoder.encode(current)
-            let saved: Bool = io.sync {
-                guard let localData, let source else { return false }
-                return StoreDisk.writeRecovery(data: localData, package: source, to: recovery)
+            let saved: URL? = io.sync {
+                guard let localData, let source else { return nil }
+                return StoreDisk.writeRecovery(data: localData, package: source, folder: folder, name: name)
             }
-            records[id]?.conflict = ConflictRecord(id: UUID(), remote: committed, remoteRevision: revision, localRecovery: saved ? recovery : nil)
-            if saved { records[id]?.recoveries.append(recovery) }
+            records[id]?.conflict = ConflictRecord(id: UUID(), remote: committed, remoteRevision: revision, localRecovery: saved)
+            if let saved { records[id]?.recoveries.append(saved) }
         }
     }
 
@@ -897,7 +935,7 @@ final class LibraryStore {
             return nil
         }
         return NotebookJob(generation: notebookState.generation, data: data, url: notebooksURL, root: rootURL,
-                           recoveryFile: recoveryDirectory.appendingPathComponent("notebooks-\(notebookState.generation).json"))
+                           recoveryFolder: recoveryDirectory, recoveryName: "notebooks-\(session.uuidString)-\(notebookState.generation)")
     }
 
     private func apply(_ receipt: NotebookReceipt, for job: NotebookJob) {
@@ -1170,7 +1208,8 @@ private struct WriteJob {
     let local: Note
     let base: Note?
     let expected: FileRevision?
-    let recoveryDirectory: URL
+    let recoveryFolder: URL
+    let recoveryName: String
 }
 
 private enum WriteReceipt {
@@ -1185,7 +1224,8 @@ private struct NotebookJob {
     let data: Data
     let url: URL
     let root: URL
-    let recoveryFile: URL
+    let recoveryFolder: URL
+    let recoveryName: String
 }
 
 private enum NotebookReceipt {
@@ -1201,6 +1241,8 @@ private enum MergeResult {
 private struct PackageRead {
     enum Outcome {
         case note(Note, FileRevision)
+        /// note.json is an iCloud placeholder that has not been downloaded.
+        case downloading
         case failure(String)
     }
     let url: URL
@@ -1209,6 +1251,8 @@ private struct PackageRead {
 
 private enum NotebookRead {
     case missing
+    /// Present in iCloud but not downloaded yet. Not the same as missing.
+    case evicted
     case invalid(String)
     case notebooks([Notebook])
 }
@@ -1250,9 +1294,57 @@ private enum StoreDisk {
         }
     }
 
+    /// iCloud leaves `.name.icloud` in place of an evicted `name`.
+    static func placeholder(for url: URL) -> URL {
+        url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).icloud")
+    }
+
+    /// The real item a placeholder stands in for, when `url` is a placeholder.
+    static func placeholderTarget(_ url: URL) -> URL? {
+        let name = url.lastPathComponent
+        guard name.hasPrefix("."), name.hasSuffix(".icloud"), name.count > 8 else { return nil }
+        return url.deletingLastPathComponent().appendingPathComponent(String(name.dropFirst().dropLast(7)))
+    }
+
+    static func isEvicted(_ url: URL) -> Bool {
+        let fm = FileManager.default
+        return !fm.fileExists(atPath: url.path) && fm.fileExists(atPath: placeholder(for: url).path)
+    }
+
+    /// Asks iCloud for every evicted item in the library and waits, at most `timeout`, for them to arrive.
+    /// Whatever is still evicted afterwards is reported by load; it is never treated as missing.
+    static func awaitDownloads(notes: URL, notebooks: URL, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        var requested = Set<URL>()
+        while true {
+            let pending = evicted(notes: notes, notebooks: notebooks)
+            guard !pending.isEmpty, Date() < deadline else { return }
+            for url in pending where requested.insert(url).inserted {
+                // Files that are not in iCloud throw here; they are not evicted, so nothing is lost.
+                try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+    }
+
+    /// Real items iCloud is still holding back: the notebook list, note packages, and note.json files.
+    private static func evicted(notes: URL, notebooks: URL) -> [URL] {
+        var items = isEvicted(notebooks) ? [notebooks] : []
+        guard case .entries(let urls) = list(notes) else { return items }
+        for url in urls {
+            if let package = placeholderTarget(url), package.pathExtension == "notas", isEvicted(package) {
+                items.append(package)
+            } else if url.pathExtension == "notas", isEvicted(url.appendingPathComponent("note.json")) {
+                items.append(url.appendingPathComponent("note.json"))
+            }
+        }
+        return items
+    }
+
     static func readNotebooks(at url: URL) -> NotebookRead {
         let data: Data
         do { data = try Data(contentsOf: url) } catch {
+            if isEvicted(url) { return .evicted }
             return isMissing(error) ? .missing : .invalid("notebooks.json could not be read (\(error.localizedDescription)).")
         }
         do { return .notebooks(try LibraryStore.makeDecoder().decode([Notebook].self, from: data)) } catch {
@@ -1280,7 +1372,8 @@ private enum StoreDisk {
                     let data = try Data(contentsOf: url.appendingPathComponent("note.json"))
                     slots.base[i] = PackageRead(url: url, outcome: .note(try decoder.decode(Note.self, from: data), FileRevision(data)))
                 } catch {
-                    slots.base[i] = PackageRead(url: url, outcome: .failure(error.localizedDescription))
+                    let file = url.appendingPathComponent("note.json")
+                    slots.base[i] = PackageRead(url: url, outcome: isEvicted(file) ? .downloading : .failure(error.localizedDescription))
                 }
             }
         }
@@ -1379,24 +1472,28 @@ private enum StoreDisk {
     }
 
     private static func recover(_ job: WriteJob) -> URL? {
-        writeRecovery(data: job.data, package: job.package, to: job.recoveryDirectory) ? job.recoveryDirectory : nil
+        writeRecovery(data: job.data, package: job.package, folder: job.recoveryFolder, name: job.recoveryName)
     }
 
-    /// A complete, ordinary package (note.json plus assets) outside the library folder.
-    static func writeRecovery(data: Data, package: URL, to directory: URL) -> Bool {
+    /// A complete, ordinary package (note.json plus assets) outside the library folder. Returns where it was
+    /// written. A copy already there with the same note.json is reused; a different one is never replaced.
+    static func writeRecovery(data: Data, package: URL, folder: URL, name: String) -> URL? {
         let fm = FileManager.default
         do {
-            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            let directory = freeDestination(in: folder, base: name, ext: "notas", isDirectory: true) {
+                (try? Data(contentsOf: $0.appendingPathComponent("note.json"))) == data
+            }
+            if fm.fileExists(atPath: directory.path) { return directory }
+            try fm.createDirectory(at: directory, withIntermediateDirectories: false)
             try data.write(to: directory.appendingPathComponent("note.json"), options: .atomic)
             let assets = package.appendingPathComponent("assets", isDirectory: true)
             if fm.fileExists(atPath: assets.path) {
-                let copy = directory.appendingPathComponent("assets", isDirectory: true)
-                if fm.fileExists(atPath: copy.path) { try fm.removeItem(at: copy) }
-                try fm.copyItem(at: assets, to: copy)
+                try fm.copyItem(at: assets, to: directory.appendingPathComponent("assets", isDirectory: true))
             }
-            return true
+            return directory
         } catch {
-            return false
+            return nil
         }
     }
 
@@ -1411,8 +1508,11 @@ private enum StoreDisk {
         } catch {
             var recovered = false
             do {
-                try fm.createDirectory(at: job.recoveryFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try job.data.write(to: job.recoveryFile, options: .atomic)
+                try fm.createDirectory(at: job.recoveryFolder, withIntermediateDirectories: true)
+                let file = freeDestination(in: job.recoveryFolder, base: job.recoveryName, ext: "json", isDirectory: false) {
+                    (try? Data(contentsOf: $0)) == job.data
+                }
+                try job.data.write(to: file, options: .atomic)
                 recovered = true
             } catch {}
             return .failed(error.localizedDescription, recovered: recovered)
@@ -1432,6 +1532,19 @@ private enum StoreDisk {
         var n = 2
         while fm.fileExists(atPath: candidate.path) {
             candidate = folder.appendingPathComponent("\(base) \(n).\(ext)", isDirectory: true)
+            n += 1
+        }
+        return candidate
+    }
+
+    /// `base.ext` in the folder, or the first free `base N.ext`. An existing entry that `matches` is reused instead.
+    static func freeDestination(in folder: URL, base: String, ext: String, isDirectory: Bool, matches: (URL) -> Bool) -> URL {
+        let fm = FileManager.default
+        var candidate = folder.appendingPathComponent("\(base).\(ext)", isDirectory: isDirectory)
+        var n = 2
+        while fm.fileExists(atPath: candidate.path) {
+            if matches(candidate) { return candidate }
+            candidate = folder.appendingPathComponent("\(base) \(n).\(ext)", isDirectory: isDirectory)
             n += 1
         }
         return candidate
